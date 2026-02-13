@@ -1,16 +1,24 @@
 # Claude-Line
 
-A voice-first mobile interface for driving Claude Code from a phone/tablet
+A voice-first mobile interface for driving Claude Code from a phone/tablet.
 
+Features:
 
-## Quick Start with uv (Recommended)
+- Hold-to-record voice commands transcribed via Whisper (Groq or OpenAI)
+- Review/edit transcriptions before sending to Claude Code
+- Streaming output from Claude Code in real time
+- **Interactive tool approval** — Yes/Always/No buttons when Claude wants to use tools
+- **Mode toggle** — Plan (read-only), Code (interactive approval), YOLO (no prompts)
+- **AskUserQuestion support** — Answer Claude's questions with tap-to-select options
 
-[uv](https://docs.astral.sh/uv/) is the recommended tool for managing this project.
+## Quick Start
+
+Requires Node.js 18+.
 
 ### Installation
 
 ```shell
-uv sync --group dev
+npm install
 ```
 
 ### Running the Server
@@ -25,107 +33,48 @@ export GROQ_API_KEY=your-key-here
 Then start the server:
 
 ```shell
-uv run python -m claudeline
+npm start
 ```
 
 The server starts on `0.0.0.0:8765` by default.
 
+For development with auto-restart:
+
+```shell
+npm run dev
+```
+
 ### HTTPS Setup (Required for Mobile Mic Access)
 
-Mobile browsers require HTTPS to allow microphone access (`getUserMedia`). Before connecting from a phone, generate a self-signed certificate and start the server with HTTPS:
-
-1. **Generate a certificate:**
-
-   ```shell
-   uv run python -m claudeline.generate_cert
-   ```
-
-   This creates `certs/cert.pem` and `certs/key.pem`, detects your local IP addresses, and prints instructions for trusting the certificate on iOS/Android.
-
-2. **Start the server with HTTPS:**
-
-   ```shell
-   uv run python -m claudeline --ssl-certfile certs/cert.pem --ssl-keyfile certs/key.pem
-   ```
-
-   Or set environment variables (e.g. in `.env`):
-
-   ```shell
-   SSL_CERTFILE=certs/cert.pem
-   SSL_KEYFILE=certs/key.pem
-   ```
-
-3. **Trust the certificate on your phone:**
-   - **iOS:** Transfer `cert.pem` to your iPhone (AirDrop, email, or HTTP), install the profile, then go to Settings > General > About > Certificate Trust Settings and enable full trust.
-   - **Android:** Transfer `cert.pem`, then go to Settings > Security > Install certificate > CA certificate.
-
-4. **Open `https://<your-computer-ip>:8765`** on your phone (both devices must be on the same network).
-
-You can override host and port via CLI flags or environment variables:
+Mobile browsers require HTTPS to allow microphone access (`getUserMedia`). Set the `SSL_CERTFILE` and `SSL_KEYFILE` environment variables (or add them to `.env`):
 
 ```shell
-uv run python -m claudeline --host 127.0.0.1 --port 9000
+SSL_CERTFILE=certs/cert.pem
+SSL_KEYFILE=certs/key.pem
 ```
+
+To generate a self-signed certificate with the built-in generator:
+
+```shell
+npm run generate-cert
+```
+
+This detects your local IP addresses, generates `certs/cert.pem` and `certs/key.pem`, and prints instructions for trusting the certificate on iOS/Android/browsers.
+
+Open `https://<your-computer-ip>:8765` on your phone (both devices must be on the same network).
+
+### Configuration
+
+Override host and port via environment variables:
+
+```shell
+HOST=127.0.0.1 PORT=9000 npm start
+```
+
+See [CLAUDE.md](CLAUDE.md) for the full list of environment variables.
 
 ### Running Tests
 
 ```shell
-uv run pytest
-```
-
-### Building
-
-```shell
-uv build
-```
-
-### Running tox
-
-```shell
-uv run tox
-```
-
-
-## Alternative: pip/setuptools
-
-For those who prefer traditional Python tooling.
-
-### Installation
-
-Create a virtual environment and install the package:
-
-```shell
-python -m venv .venv
-source .venv/bin/activate  # or .venv\Scripts\activate on Windows
-pip install -e ".[dev]"
-```
-
-### Building
-
-```shell
-python -m build
-```
-
-After building, you can install the wheel:
-
-```shell
-pip install dist/claudeline-0.0.1-py3-none-any.whl
-```
-
-### Running Tests
-
-```shell
-pytest
-```
-
-*Note:* If you install the package from a wheel, the tests will run against the
-installed package; install in editable mode (i.e., using the `-e` option) to
-test against the development package.
-
-### Running tox
-
-To test against multiple Python versions:
-
-```shell
-tox
+npm test
 ```

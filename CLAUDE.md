@@ -2,62 +2,74 @@
 
 ## Project Overview
 
-A voice-first mobile interface for driving Claude Code from a phone/tablet. The user speaks commands on their phone, audio is transcribed via Whisper (Groq or OpenAI API), the user reviews/edits the transcription, then sends it to a Claude Code subprocess running on their desktop. Output streams back to the phone in real time.
+A voice-first mobile interface for driving Claude Code from a phone/tablet. The user speaks commands on their phone, audio is transcribed via Whisper (Groq or OpenAI API), the user reviews/edits the transcription, then sends it to Claude Code via the Agent SDK. Output streams back to the phone in real time. Interactive tool approval and mode switching (Plan/Code/YOLO) are supported.
 
 ## Architecture
 
 ```
-Phone browser → WebSocket → FastAPI server → Whisper API (transcription)
-                                           → optional LLM cleanup pass
-                                           → Claude Code subprocess (claude -p)
-                                           → streams output back over WebSocket
+Phone browser → WebSocket → Node.js server → Whisper API (transcription)
+                                            → optional LLM cleanup pass
+                                            → Claude Agent SDK
+                          ← permission_request ←─┘
+                          → permission_response →─┘
+                          ← claude_chunk / claude_done
 ```
 
 Single-user tool. One Claude Code session per server instance. The frontend is a single HTML file with inline CSS/JS served as a static file.
 
+Key insight: the SDK's `canUseTool(toolName, input)` is async. When called, we send a `permission_request` to the phone, show buttons, and `await` the user's response before resolving. This gives true interactive per-tool approval.
+
 ## File Structure
 
 ```
-src/claudeline/
-  __init__.py              — package version
-  __main__.py              — Typer CLI entry point (starts the server)
-  server.py                — FastAPI app, WebSocket handler, routes
-  config.py                — pydantic-settings configuration
-  transcription.py         — Whisper API integration (Groq and OpenAI)
-  text_cleanup.py          — Optional LLM-based spoken→written text conversion
-  claude_code_manager.py   — Manages Claude Code subprocess lifecycle
-  generate_cert.py         — Self-signed certificate generation for HTTPS
+src/
+  server.js              — Express + WebSocket server
+  claude-session.js      — Claude Agent SDK wrapper (permissions, streaming, resume)
+  transcription.js       — Whisper API integration (Groq and OpenAI)
+  text-cleanup.js        — Optional LLM-based spoken→written text conversion
+  config.js              — Environment variable configuration
+  generate-cert.js       — Self-signed certificate generation for HTTPS
   static/
-    index.html             — Mobile-first web UI (inline CSS and JS)
+    index.html           — Mobile-first web UI (inline CSS and JS)
+tests/
+  config.test.js         — Config module tests
+  transcription.test.js  — Transcription module tests
+  text-cleanup.test.js   — Text cleanup module tests
+  claude-session.test.js — Claude session tests (SDK mocking)
+  server.test.js         — Server utility tests
+  generate-cert.test.js  — Certificate generation tests
+package.json             — Dependencies and scripts
+vitest.config.js         — Test configuration
 ```
 
 ## Key Design Principles
 
 - **Review before send**: Transcriptions are always shown for editing before being sent to Claude Code. Never auto-send — errors in coding instructions are expensive.
+- **Interactive permissions**: Tool usage requires user approval via Yes/Always/No buttons on the phone. "Always" auto-approves the tool for the rest of the session.
+- **Mode toggle**: Switch between Plan (read-only), Code (interactive approval), and YOLO (bypass all permissions) modes.
 - **Mobile-first**: The UI is designed for phones. Touch targets are large, the mic button uses pointer events for cross-platform hold-to-record, safe area insets are respected.
 - **Streaming output**: Claude Code output streams chunk-by-chunk to the phone via WebSocket so the user sees progress immediately.
-- **Session continuity**: The `--resume` flag maintains Claude Code conversation context across commands within a session. `Reset` starts a fresh session.
-- **Minimal dependencies**: No frontend build step. Backend uses only well-maintained, lightweight Python packages.
+- **Session continuity**: The SDK's `resume` option maintains Claude Code conversation context across commands within a session. `Reset` starts a fresh session.
+- **Minimal dependencies**: No frontend build step. Backend uses Express, ws, and the Claude Agent SDK.
 
 ## Environment Variables
 
 All configuration is via environment variables (or a `.env` file in the project root):
 
-| Variable | Required | Default | Notes |
-|---|---|---|---|
-| `GROQ_API_KEY` | Yes (if using Groq) | — | Get from console.groq.com |
-| `OPENAI_API_KEY` | If using OpenAI | — | Alternative transcription provider |
-| `TRANSCRIPTION_PROVIDER` | No | `groq` | `groq` or `openai` |
-| `CLAUDE_WORK_DIR` | No | `.` | Working directory for Claude Code |
-| `CLAUDE_COMMAND` | No | `claude` | Path to claude binary if not in PATH |
-| `HOST` | No | `0.0.0.0` | Server bind address |
-| `PORT` | No | `8765` | Server port |
-| `CLEANUP_ENABLED` | No | `false` | Enable LLM text cleanup pass |
-| `CLEANUP_PROVIDER` | No | `anthropic` | `anthropic` or `openai` |
-| `ANTHROPIC_API_KEY` | If cleanup enabled | — | For Anthropic cleanup provider |
-| `CLEANUP_MODEL` | No | `claude-sonnet-4-20250514` | Model for cleanup |
-| `SSL_CERTFILE` | No | — | Path to SSL certificate for HTTPS |
-| `SSL_KEYFILE` | No | — | Path to SSL private key for HTTPS |
+| Variable                 | Required            | Default                    | Notes                              |
+| ------------------------ | ------------------- | -------------------------- | ---------------------------------- |
+| `GROQ_API_KEY`           | Yes (if using Groq) | —                          | Get from console.groq.com          |
+| `OPENAI_API_KEY`         | If using OpenAI     | —                          | Alternative transcription provider |
+| `TRANSCRIPTION_PROVIDER` | No                  | `groq`                     | `groq` or `openai`                 |
+| `CLAUDE_WORK_DIR`        | No                  | `.`                        | Working directory for Claude Code  |
+| `HOST`                   | No                  | `0.0.0.0`                  | Server bind address                |
+| `PORT`                   | No                  | `8765`                     | Server port                        |
+| `CLEANUP_ENABLED`        | No                  | `false`                    | Enable LLM text cleanup pass       |
+| `CLEANUP_PROVIDER`       | No                  | `anthropic`                | `anthropic` or `openai`            |
+| `ANTHROPIC_API_KEY`      | If cleanup enabled  | —                          | For Anthropic cleanup provider     |
+| `CLEANUP_MODEL`          | No                  | `claude-sonnet-4-20250514` | Model for cleanup                  |
+| `SSL_CERTFILE`           | No                  | —                          | Path to SSL certificate for HTTPS  |
+| `SSL_KEYFILE`            | No                  | —                          | Path to SSL private key for HTTPS  |
 
 ## WebSocket Protocol
 
@@ -69,6 +81,9 @@ All communication between frontend and backend is over a single WebSocket at `/w
 - `{"type": "send", "text": "..."}` — send command to Claude Code
 - `{"type": "cancel"}` — cancel running Claude Code command
 - `{"type": "reset"}` — reset Claude Code session
+- `{"type": "set_mode", "mode": "plan|default|bypassPermissions"}` — change permission mode
+- `{"type": "permission_response", "action": "allow|allowSession|deny", "message?": "..."}` — respond to tool approval request
+- `{"type": "user_answer", "answers": {"question": "answer"}}` — answer AskUserQuestion
 
 ### Server → Client
 
@@ -78,6 +93,10 @@ All communication between frontend and backend is over a single WebSocket at `/w
 - `{"type": "claude_done", "success": true, "output": "..."}` — command completed
 - `{"type": "status", "message": "..."}` — status updates (shown in status bar)
 - `{"type": "error", "message": "..."}` — error messages
+- `{"type": "config", "work_dir": "...", "work_dir_display": "...", "permission_mode": "..."}` — initial configuration
+- `{"type": "permission_request", "toolName": "...", "input": {...}, "description": "..."}` — tool requesting approval
+- `{"type": "ask_user", "questions": [...]}` — Claude asking a question with options
+- `{"type": "mode_changed", "mode": "..."}` — confirms mode change
 
 ## Development Guidelines
 
@@ -109,80 +128,86 @@ All communication between frontend and backend is over a single WebSocket at `/w
 
 ## Commands
 
-| Command | Description |
-|---------|-------------|
-| `uv run python -m claudeline` | Start the server |
-| `uv run python -m claudeline --help` | Show CLI help |
-| `uv run python -m claudeline --version` | Show version |
-| `uv run pytest` | Run tests |
-| `uv run tox` | Test against multiple Python versions |
-| `uv run ruff check .` | Run linter |
-| `uv run ruff format .` | Format code |
-| `uv run mypy src/` | Run type checker |
-| `uv run python -m claudeline.generate_cert` | Generate self-signed SSL certificate |
-| `uv run pre-commit run --all-files` | Run all pre-commit checks |
+| Command                 | Description                          |
+| ----------------------- | ------------------------------------ |
+| `npm start`             | Start the server                     |
+| `npm run dev`           | Start with --watch (auto-restart)    |
+| `npm test`              | Run tests (vitest)                   |
+| `npm run generate-cert` | Generate self-signed SSL certificate |
+| `npm run format`        | Format all files with Prettier       |
+| `npm run format:check`  | Check formatting without writing     |
 
-### Before Committing
+## Before Committing
 
-Run all pre-commit checks:
-```bash
-uv run pre-commit run --all-files
-```
+A pre-commit hook (husky + lint-staged) runs automatically on `git commit`:
 
-Or install hooks to run automatically on every commit:
-```bash
-uv run pre-commit install
-```
+1. **Prettier** formats all staged `.js`, `.json`, `.md`, and `.html` files
+2. **vitest** runs the full test suite
+
+If either step fails, the commit is aborted. You can run these manually:
+
+- `npm run format:check` — check formatting without writing
+- `npm run format` — fix formatting
+- `npm test` — run tests
 
 ## Development Notes
 
-- Run with `uv run python -m claudeline` or `claude-line` (console script). The CLI configures uvicorn internally.
-- The frontend has no build step. Edit `src/claudeline/static/index.html` directly and reload on the phone.
+- Run with `npm start` or `node src/server.js`. The server uses Express + ws for WebSocket support.
+- Node.js 18+ required (built-in `fetch`, `FormData`, `crypto`).
+- The frontend has no build step. Edit `src/static/index.html` directly and reload on the phone.
 - To test without a phone, open `http://localhost:8765` in a desktop browser — mic recording works there too.
-- Claude Code's `--output-format stream-json` emits one JSON object per line. The parser in `claude_code_manager.py` handles `system`, `assistant`, and `result` message types. If Claude Code's output format changes in future versions, that parser is the place to update.
-- The `_find_claude()` method in `claude_code_manager.py` checks common install locations (`~/.npm-global/bin/claude`, `~/.local/bin/claude`, `/usr/local/bin/claude`) as fallbacks if `claude` is not in PATH.
+- The Claude Agent SDK's `canUseTool` callback handles permission requests. When a tool needs approval, the callback sends a WebSocket message to the phone and awaits the user's response via a pending Promise.
 - Audio format: the frontend tries `audio/webm;codecs=opus` first (Chrome/Firefox), falls back to `audio/mp4` (Safari), then generic `audio/webm`. The transcription module maps MIME types to file extensions for the Whisper API.
+- The `_sessionAllowedTools` Set in `claude-session.js` tracks tools that the user has approved with "Always" for the current session. These auto-approve without prompting.
 
 ## Common Tasks
 
 ### Adding a new transcription provider
 
-1. Add the provider's API URL and config to `src/claudeline/config.py`
-2. Add a new branch in `transcribe_audio()` in `src/claudeline/transcription.py`
-3. The function should return `{"text": "...", "success": True}` on success
+1. Add the provider's API URL and config to `src/config.js`
+2. Add a new branch in `transcribeAudio()` in `src/transcription.js`
+3. The function should return `{text: "...", success: true}` on success
 
 ### Adding a new cleanup provider
 
-1. Add config to `src/claudeline/config.py`
-2. Add an `_cleanup_<provider>()` function in `src/claudeline/text_cleanup.py`
-3. Add the branch in `cleanup_text()`
+1. Add config to `src/config.js`
+2. Add a `_cleanup<Provider>()` function in `src/text-cleanup.js`
+3. Add the branch in `cleanupText()`
 
 ### Modifying the UI
 
-Everything is in `src/claudeline/static/index.html`. CSS is in a `<style>` block, JS is in a `<script>` block at the bottom. The app uses no framework — DOM manipulation is direct. Key UI state is managed via CSS classes (`visible`, `recording`, `processing`, `connected`).
+Everything is in `src/static/index.html`. CSS is in a `<style>` block, JS is in a `<script>` block at the bottom. The app uses no framework — DOM manipulation is direct. Key UI state is managed via CSS classes (`visible`, `recording`, `processing`, `connected`).
+
+Key UI components:
+
+- **Mode toggle**: Segmented control in the header (Plan/Code/YOLO)
+- **Permission bar**: Slides up when a tool needs approval (Yes/Always/No + custom text)
+- **Ask user bar**: Shows questions from Claude with option buttons
+- **Transcription bar**: Shows transcribed audio for review/edit before sending
 
 ### Enabling HTTPS
 
-Mic recording (`getUserMedia`) requires a secure context (HTTPS) on non-localhost origins. To enable HTTPS with a self-signed certificate:
+Mic recording (`getUserMedia`) requires a secure context (HTTPS) on non-localhost origins. To enable HTTPS:
 
-1. Generate a certificate: `uv run python -m claudeline.generate_cert`
-2. Start the server with SSL: `claude-line --ssl-certfile certs/cert.pem --ssl-keyfile certs/key.pem`
-3. Trust the certificate on your phone (see the generated instructions for iOS/Android steps)
-
-You can also set `SSL_CERTFILE` and `SSL_KEYFILE` environment variables instead of CLI flags.
+1. Generate a certificate: `npm run generate-cert` (interactive — detects local IPs, generates `certs/cert.pem` and `certs/key.pem`)
+2. Set `SSL_CERTFILE=certs/cert.pem` and `SSL_KEYFILE=certs/key.pem` in `.env` or environment
+3. Trust the certificate on your phone (the generator prints iOS/Android/browser instructions)
 
 ### Changing how Claude Code is invoked
 
-Edit `ClaudeCodeManager.execute()` in `src/claudeline/claude_code_manager.py`. The `cmd` list built there controls the exact command line. Key flags:
-- `-p` — print mode (non-interactive, reads prompt from args)
-- `--output-format stream-json` — machine-readable streaming output
-- `--resume <session_id>` — continue a previous conversation
+Edit `ClaudeSession.execute()` in `src/claude-session.js`. The `options` object passed to the SDK's `query()` function controls behavior. Key options:
+
+- `permissionMode` — `'default'`, `'plan'`, or `'bypassPermissions'`
+- `resume` — session ID to continue a previous conversation
+- `canUseTool` — async callback for interactive permission approval
+- `cwd` — working directory for Claude Code
 
 ## Security Considerations
 
 - This is a single-user tool intended for local network use. There is no authentication.
 - Do not expose to the public internet without adding auth (e.g., a bearer token checked on WebSocket connect).
 - The server can execute arbitrary commands via Claude Code on the host machine.
+- YOLO mode bypasses all permission checks — use with caution.
 - For remote access, use Tailscale (preferred) or SSH port forwarding rather than opening the port directly.
 
 ## Planned Features / TODOs
