@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     claude_work_dir: str = "."
     claude_command: str = "claude"
 
+    # SSL
+    ssl_certfile: str = ""
+    ssl_keyfile: str = ""
+
     # Text cleanup (LLM post-processing of transcription)
     cleanup_enabled: bool = False
     cleanup_provider: str = "anthropic"  # "anthropic" or "openai"
@@ -27,6 +31,10 @@ class Settings(BaseSettings):
     cleanup_model: str = "claude-sonnet-4-20250514"
 
     model_config = {"env_file": ".env", "extra": "ignore"}
+
+    @property
+    def ssl_enabled(self) -> bool:
+        return bool(self.ssl_certfile and self.ssl_keyfile)
 
     @property
     def transcription_api_key(self) -> str:

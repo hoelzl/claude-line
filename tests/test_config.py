@@ -39,6 +39,36 @@ class TestSettingsDefaults:
         assert s.cleanup_provider == "anthropic"
 
 
+class TestSettingsSsl:
+    """Test SSL-related settings and the ssl_enabled property."""
+
+    def test_default_ssl_certfile_is_empty(self):
+        s = Settings(groq_api_key="test")
+        assert s.ssl_certfile == ""
+
+    def test_default_ssl_keyfile_is_empty(self):
+        s = Settings(groq_api_key="test")
+        assert s.ssl_keyfile == ""
+
+    def test_ssl_enabled_false_when_both_empty(self):
+        s = Settings(groq_api_key="test")
+        assert s.ssl_enabled is False
+
+    def test_ssl_enabled_false_when_only_certfile_set(self):
+        s = Settings(groq_api_key="test", ssl_certfile="cert.pem")
+        assert s.ssl_enabled is False
+
+    def test_ssl_enabled_false_when_only_keyfile_set(self):
+        s = Settings(groq_api_key="test", ssl_keyfile="key.pem")
+        assert s.ssl_enabled is False
+
+    def test_ssl_enabled_true_when_both_set(self):
+        s = Settings(
+            groq_api_key="test", ssl_certfile="cert.pem", ssl_keyfile="key.pem"
+        )
+        assert s.ssl_enabled is True
+
+
 class TestSettingsTranscriptionProperties:
     """Test transcription-related properties."""
 

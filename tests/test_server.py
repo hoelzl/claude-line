@@ -9,6 +9,7 @@ from claudeline.server import (
     _format_work_dir,
     handle_cancel,
     handle_reset,
+    run_server,
     websocket_endpoint,
 )
 
@@ -110,3 +111,36 @@ class TestWebSocketConfig:
         assert msg["type"] == "config"
         assert msg["work_dir"] == "/home/user/projects/my-app"
         assert "work_dir_display" in msg
+
+
+class TestRunServerSsl:
+    """Test that run_server passes SSL params to uvicorn correctly."""
+
+    @patch("claudeline.server.uvicorn")
+    def test_ssl_params_passed_to_uvicorn_when_set(self, mock_uvicorn):
+        run_server(
+            host="127.0.0.1",
+            port=9999,
+            ssl_certfile="/path/cert.pem",
+            ssl_keyfile="/path/key.pem",
+        )
+        mock_uvicorn.run.assert_called_once()
+        kwargs = mock_uvicorn.run.call_args
+        assert kwargs[1]["ssl_certfile"] == "/path/cert.pem"
+        assert kwargs[1]["ssl_keyfile"] == "/path/key.pem"
+
+    @patch("claudeline.server.uvicorn")
+    def test_ssl_params_omitted_when_not_set(self, mock_uvicorn):
+        run_server(host="127.0.0.1", port=9999)
+        mock_uvicorn.run.assert_called_once()
+        kwargs = mock_uvicorn.run.call_args
+        assert "ssl_certfile" not in kwargs[1]
+        assert "ssl_keyfile" not in kwargs[1]
+
+    @patch("claudeline.server.uvicorn")
+    def test_ssl_params_omitted_when_only_certfile_set(self, mock_uvicorn):
+        run_server(host="127.0.0.1", port=9999, ssl_certfile="/path/cert.pem")
+        mock_uvicorn.run.assert_called_once()
+        kwargs = mock_uvicorn.run.call_args
+        assert "ssl_certfile" not in kwargs[1]
+        assert "ssl_keyfile" not in kwargs[1]

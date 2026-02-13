@@ -22,6 +22,14 @@ def typer_main(
         int | None,
         typer.Option(help="Port to listen on (default: from PORT env var or 8765)."),
     ] = None,
+    ssl_certfile: Annotated[
+        str | None,
+        typer.Option(help="Path to SSL certificate file for HTTPS."),
+    ] = None,
+    ssl_keyfile: Annotated[
+        str | None,
+        typer.Option(help="Path to SSL private key file for HTTPS."),
+    ] = None,
     version: Annotated[
         bool | None,
         typer.Option(
@@ -35,7 +43,7 @@ def typer_main(
     """Claude Line: voice-first mobile interface for Claude Code."""
     from .server import run_server
 
-    run_server(host=host, port=port)
+    run_server(host=host, port=port, ssl_certfile=ssl_certfile, ssl_keyfile=ssl_keyfile)
 
 
 def main():

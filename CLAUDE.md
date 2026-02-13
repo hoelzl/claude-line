@@ -26,6 +26,7 @@ src/claudeline/
   transcription.py         — Whisper API integration (Groq and OpenAI)
   text_cleanup.py          — Optional LLM-based spoken→written text conversion
   claude_code_manager.py   — Manages Claude Code subprocess lifecycle
+  generate_cert.py         — Self-signed certificate generation for HTTPS
   static/
     index.html             — Mobile-first web UI (inline CSS and JS)
 ```
@@ -55,6 +56,8 @@ All configuration is via environment variables (or a `.env` file in the project 
 | `CLEANUP_PROVIDER` | No | `anthropic` | `anthropic` or `openai` |
 | `ANTHROPIC_API_KEY` | If cleanup enabled | — | For Anthropic cleanup provider |
 | `CLEANUP_MODEL` | No | `claude-sonnet-4-20250514` | Model for cleanup |
+| `SSL_CERTFILE` | No | — | Path to SSL certificate for HTTPS |
+| `SSL_KEYFILE` | No | — | Path to SSL private key for HTTPS |
 
 ## WebSocket Protocol
 
@@ -116,6 +119,7 @@ All communication between frontend and backend is over a single WebSocket at `/w
 | `uv run ruff check .` | Run linter |
 | `uv run ruff format .` | Format code |
 | `uv run mypy src/` | Run type checker |
+| `uv run python -m claudeline.generate_cert` | Generate self-signed SSL certificate |
 | `uv run pre-commit run --all-files` | Run all pre-commit checks |
 
 ### Before Committing
@@ -156,6 +160,16 @@ uv run pre-commit install
 ### Modifying the UI
 
 Everything is in `src/claudeline/static/index.html`. CSS is in a `<style>` block, JS is in a `<script>` block at the bottom. The app uses no framework — DOM manipulation is direct. Key UI state is managed via CSS classes (`visible`, `recording`, `processing`, `connected`).
+
+### Enabling HTTPS
+
+Mic recording (`getUserMedia`) requires a secure context (HTTPS) on non-localhost origins. To enable HTTPS with a self-signed certificate:
+
+1. Generate a certificate: `uv run python -m claudeline.generate_cert`
+2. Start the server with SSL: `claude-line --ssl-certfile certs/cert.pem --ssl-keyfile certs/key.pem`
+3. Trust the certificate on your phone (see the generated instructions for iOS/Android steps)
+
+You can also set `SSL_CERTFILE` and `SSL_KEYFILE` environment variables instead of CLI flags.
 
 ### Changing how Claude Code is invoked
 

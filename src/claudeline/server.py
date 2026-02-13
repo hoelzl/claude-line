@@ -202,25 +202,40 @@ async def handle_reset(ws: WebSocket):
     )
 
 
-def run_server(host: str | None = None, port: int | None = None):
+def run_server(
+    host: str | None = None,
+    port: int | None = None,
+    ssl_certfile: str | None = None,
+    ssl_keyfile: str | None = None,
+):
     """Start the Claude Line server."""
     server_host = host or settings.host
     server_port = port or settings.port
+
+    # Resolve SSL: CLI arg → env var → disabled
+    cert = ssl_certfile or settings.ssl_certfile or None
+    key = ssl_keyfile or settings.ssl_keyfile or None
+    use_ssl = bool(cert and key)
+    protocol = "https" if use_ssl else "http"
 
     logger.info(f"Starting Claude Line on {server_host}:{server_port}")
     logger.info(f"Transcription provider: {settings.transcription_provider}")
     logger.info(f"Claude Code work dir: {settings.claude_work_dir}")
     cleanup_status = "enabled" if settings.cleanup_enabled else "disabled"
     logger.info(f"Text cleanup: {cleanup_status}")
-    logger.info(f"Open http://<your-ip>:{server_port} on your phone")
+    logger.info(f"Open {protocol}://<your-ip>:{server_port} on your phone")
 
-    uvicorn.run(
-        "claudeline.server:app",
-        host=server_host,
-        port=server_port,
-        reload=False,
-        log_level="info",
-    )
+    uvicorn_kwargs: dict = {
+        "host": server_host,
+        "port": server_port,
+        "reload": False,
+        "log_level": "info",
+    }
+    if use_ssl:
+        uvicorn_kwargs["ssl_certfile"] = cert
+        uvicorn_kwargs["ssl_keyfile"] = key
+
+    uvicorn.run("claudeline.server:app", **uvicorn_kwargs)
 
 
 if __name__ == "__main__":
