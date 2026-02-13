@@ -1175,6 +1175,24 @@
         function handleAskUser(msg) {
           askUserContent.innerHTML = '';
           const questions = msg.questions || [];
+          const allAnswers = {}; // Track answers for all questions
+          const multiSelectSets = {}; // Track multi-select selections per question
+
+          // Create submit button first so it can be referenced in updateSubmitButton
+          const submitAllBtn = document.createElement('button');
+          submitAllBtn.className = 'btn-send';
+          submitAllBtn.textContent = 'Submit Answers';
+          submitAllBtn.disabled = true;
+          submitAllBtn.style.marginTop = '12px';
+          submitAllBtn.addEventListener('click', () => {
+            sendUserAnswer(allAnswers);
+          });
+
+          // Helper to check if all questions are answered
+          function updateSubmitButton() {
+            const allAnswered = questions.every((q) => allAnswers[q.question]);
+            submitAllBtn.disabled = !allAnswered;
+          }
 
           questions.forEach((q) => {
             const qDiv = document.createElement('div');
@@ -1193,7 +1211,9 @@
             const optionsDiv = document.createElement('div');
             optionsDiv.className = 'ask-user-options';
 
-            const selectedAnswers = new Set();
+            if (q.multiSelect) {
+              multiSelectSets[q.question] = new Set();
+            }
 
             (q.options || []).forEach((opt) => {
               const btn = document.createElement('div');
@@ -1207,15 +1227,29 @@
               btn.addEventListener('click', () => {
                 if (q.multiSelect) {
                   btn.classList.toggle('selected');
-                  if (selectedAnswers.has(opt.label)) {
-                    selectedAnswers.delete(opt.label);
+                  const selSet = multiSelectSets[q.question];
+                  if (selSet.has(opt.label)) {
+                    selSet.delete(opt.label);
                   } else {
-                    selectedAnswers.add(opt.label);
+                    selSet.add(opt.label);
+                  }
+                  // Update answer (empty string if nothing selected)
+                  allAnswers[q.question] = selSet.size > 0 ? [...selSet].join(', ') : '';
+                  if (!allAnswers[q.question]) {
+                    delete allAnswers[q.question];
                   }
                 } else {
-                  // Single select — send immediately
-                  sendUserAnswer({ [q.question]: opt.label });
+                  // Single select — radio button behavior
+                  optionsDiv
+                    .querySelectorAll('.ask-user-option')
+                    .forEach((b) => b.classList.remove('selected'));
+                  btn.classList.add('selected');
+                  allAnswers[q.question] = opt.label;
+                  // Clear custom input if user picks an option
+                  const customInput = qDiv.querySelector('.ask-user-custom input');
+                  if (customInput) customInput.value = '';
                 }
+                updateSubmitButton();
               });
 
               optionsDiv.appendChild(btn);
@@ -1223,42 +1257,39 @@
 
             qDiv.appendChild(optionsDiv);
 
-            // If multi-select, add a submit button
-            if (q.multiSelect) {
-              const submitBtn = document.createElement('button');
-              submitBtn.className = 'btn-send';
-              submitBtn.textContent = 'Submit';
-              submitBtn.style.marginBottom = '8px';
-              submitBtn.addEventListener('click', () => {
-                sendUserAnswer({ [q.question]: [...selectedAnswers].join(', ') });
-              });
-              qDiv.appendChild(submitBtn);
-            }
-
             // Custom input ("Other")
             const customDiv = document.createElement('div');
             customDiv.className = 'ask-user-custom';
             const customInput = document.createElement('input');
             customInput.type = 'text';
             customInput.placeholder = 'Other...';
-            const customBtn = document.createElement('button');
-            customBtn.textContent = 'Send';
-            customBtn.addEventListener('click', () => {
-              if (customInput.value.trim()) {
-                sendUserAnswer({ [q.question]: customInput.value.trim() });
+
+            // Update answer as user types in custom input
+            customInput.addEventListener('input', () => {
+              const val = customInput.value.trim();
+              if (val) {
+                // Deselect option buttons when typing custom answer
+                optionsDiv
+                  .querySelectorAll('.ask-user-option')
+                  .forEach((b) => b.classList.remove('selected'));
+                if (q.multiSelect) {
+                  multiSelectSets[q.question].clear();
+                }
+                allAnswers[q.question] = val;
+              } else {
+                delete allAnswers[q.question];
               }
+              updateSubmitButton();
             });
-            customInput.addEventListener('keydown', (e) => {
-              if (e.key === 'Enter' && customInput.value.trim()) {
-                sendUserAnswer({ [q.question]: customInput.value.trim() });
-              }
-            });
+
             customDiv.appendChild(customInput);
-            customDiv.appendChild(customBtn);
             qDiv.appendChild(customDiv);
 
             askUserContent.appendChild(qDiv);
           });
+
+          // Append submit button at the end
+          askUserContent.appendChild(submitAllBtn);
 
           askUserBar.classList.add('visible');
           scrollToBottom();
