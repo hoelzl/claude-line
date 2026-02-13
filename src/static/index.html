@@ -593,7 +593,7 @@
         resize: none;
         outline: none;
         min-height: 44px;
-        max-height: 120px;
+        max-height: 240px;
         transition: border-color 0.15s;
       }
 
@@ -1388,7 +1388,7 @@
 
         function autoResize(textarea) {
           textarea.style.height = 'auto';
-          textarea.style.height = Math.min(textarea.scrollHeight, 120) + 'px';
+          textarea.style.height = Math.min(textarea.scrollHeight, 240) + 'px';
         }
 
         function escapeHtml(str) {
