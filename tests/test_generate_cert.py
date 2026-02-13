@@ -58,18 +58,14 @@ class TestGenerateCertificate:
     def test_cert_contains_localhost_dns_san(self, tmp_path):
         cert_path, _ = generate_certificate([], output_dir=str(tmp_path))
         cert = x509.load_pem_x509_certificate(cert_path.read_bytes())
-        san = cert.extensions.get_extension_for_class(
-            x509.SubjectAlternativeName
-        ).value
+        san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
         dns_names = san.get_values_for_type(x509.DNSName)
         assert "localhost" in dns_names
 
     def test_cert_contains_loopback_ip_san(self, tmp_path):
         cert_path, _ = generate_certificate([], output_dir=str(tmp_path))
         cert = x509.load_pem_x509_certificate(cert_path.read_bytes())
-        san = cert.extensions.get_extension_for_class(
-            x509.SubjectAlternativeName
-        ).value
+        san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
         ip_addrs = san.get_values_for_type(x509.IPAddress)
         assert ipaddress.IPv4Address("127.0.0.1") in ip_addrs
 
@@ -78,9 +74,7 @@ class TestGenerateCertificate:
             ["192.168.1.100", "10.0.0.5"], output_dir=str(tmp_path)
         )
         cert = x509.load_pem_x509_certificate(cert_path.read_bytes())
-        san = cert.extensions.get_extension_for_class(
-            x509.SubjectAlternativeName
-        ).value
+        san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
         ip_addrs = san.get_values_for_type(x509.IPAddress)
         assert ipaddress.IPv4Address("192.168.1.100") in ip_addrs
         assert ipaddress.IPv4Address("10.0.0.5") in ip_addrs
@@ -100,9 +94,7 @@ class TestGenerateCertificate:
         assert cn[0].value == "Test CN"
 
     def test_correct_validity_period(self, tmp_path):
-        cert_path, _ = generate_certificate(
-            [], output_dir=str(tmp_path), days_valid=30
-        )
+        cert_path, _ = generate_certificate([], output_dir=str(tmp_path), days_valid=30)
         cert = x509.load_pem_x509_certificate(cert_path.read_bytes())
         delta = cert.not_valid_after_utc - cert.not_valid_before_utc
         assert delta.days == 30

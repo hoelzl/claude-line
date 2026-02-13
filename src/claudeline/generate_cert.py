@@ -139,9 +139,7 @@ def print_instructions(cert_path: Path, key_path: Path, ips: list[str]) -> None:
     print(f"  Private key: {key_path}")
 
     print("\n--- Start Server with HTTPS ---")
-    print(
-        f"  claude-line --ssl-certfile {cert_path} --ssl-keyfile {key_path}"
-    )
+    print(f"  claude-line --ssl-certfile {cert_path} --ssl-keyfile {key_path}")
 
     if ips:
         print("\n--- Access from your phone ---")
@@ -183,8 +181,7 @@ def interactive_main() -> None:
     # Interactive mode: let user confirm/add IPs
     if sys.stdin.isatty():
         print(
-            "\nPress Enter to use all detected IPs, or type IPs "
-            "separated by spaces:"
+            "\nPress Enter to use all detected IPs, or type IPs " "separated by spaces:"
         )
         try:
             user_input = input("> ").strip()
