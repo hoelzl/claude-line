@@ -461,3 +461,205 @@ describe('formatToolDescription', () => {
     expect(formatToolDescription('CustomTool', {})).toBe('Use tool: CustomTool');
   });
 });
+
+describe('ClaudeSession mode change detection', () => {
+  let session;
+
+  beforeEach(() => {
+    session = new ClaudeSession({ workDir: '/test/dir' });
+    vi.clearAllMocks();
+  });
+
+  it('calls onModeChange when ExitPlanMode is used in plan mode', async () => {
+    session.setPermissionMode('plan');
+    const onModeChange = vi.fn();
+
+    // Create a generator that calls canUseTool during iteration
+    let resolveToolUse;
+    const toolUsePromise = new Promise((resolve) => {
+      resolveToolUse = resolve;
+    });
+
+    query.mockImplementation(({ options }) => {
+      return (async function* () {
+        // Call canUseTool during the iteration (while execute is running)
+        const result = await options.canUseTool(
+          'ExitPlanMode',
+          {},
+          { signal: new AbortController().signal },
+        );
+        resolveToolUse(result);
+      })();
+    });
+
+    const executePromise = session.execute('test', {
+      onChunk: vi.fn(),
+      onPermissionRequest: vi.fn(),
+      onAskUser: vi.fn(),
+      onModeChange,
+    });
+
+    const result = await toolUsePromise;
+    await executePromise;
+
+    expect(result.behavior).toBe('allow');
+    expect(session.getPermissionMode()).toBe('default');
+    expect(onModeChange).toHaveBeenCalledWith('default');
+  });
+
+  it('does not change mode when ExitPlanMode is used outside plan mode', async () => {
+    session.setPermissionMode('default');
+    const onModeChange = vi.fn();
+
+    let toolResult;
+    query.mockImplementation(({ options }) => {
+      return (async function* () {
+        toolResult = await options.canUseTool(
+          'ExitPlanMode',
+          {},
+          { signal: new AbortController().signal },
+        );
+      })();
+    });
+
+    await session.execute('test', {
+      onChunk: vi.fn(),
+      onPermissionRequest: vi.fn(),
+      onAskUser: vi.fn(),
+      onModeChange,
+    });
+
+    expect(toolResult.behavior).toBe('allow');
+    expect(session.getPermissionMode()).toBe('default');
+    expect(onModeChange).not.toHaveBeenCalled();
+  });
+
+  it('calls onModeChange when EnterPlanMode is used', async () => {
+    session.setPermissionMode('default');
+    const onModeChange = vi.fn();
+
+    let toolResult;
+    query.mockImplementation(({ options }) => {
+      return (async function* () {
+        toolResult = await options.canUseTool(
+          'EnterPlanMode',
+          {},
+          { signal: new AbortController().signal },
+        );
+      })();
+    });
+
+    await session.execute('test', {
+      onChunk: vi.fn(),
+      onPermissionRequest: vi.fn(),
+      onAskUser: vi.fn(),
+      onModeChange,
+    });
+
+    expect(toolResult.behavior).toBe('allow');
+    expect(session.getPermissionMode()).toBe('plan');
+    expect(onModeChange).toHaveBeenCalledWith('plan');
+  });
+
+  it('does not change mode when EnterPlanMode is used in plan mode', async () => {
+    session.setPermissionMode('plan');
+    const onModeChange = vi.fn();
+
+    let toolResult;
+    query.mockImplementation(({ options }) => {
+      return (async function* () {
+        toolResult = await options.canUseTool(
+          'EnterPlanMode',
+          {},
+          { signal: new AbortController().signal },
+        );
+      })();
+    });
+
+    await session.execute('test', {
+      onChunk: vi.fn(),
+      onPermissionRequest: vi.fn(),
+      onAskUser: vi.fn(),
+      onModeChange,
+    });
+
+    expect(toolResult.behavior).toBe('allow');
+    expect(session.getPermissionMode()).toBe('plan');
+    expect(onModeChange).not.toHaveBeenCalled();
+  });
+
+  it('calls onModeChange when system message has different permissionMode', async () => {
+    session.setPermissionMode('plan');
+    const onModeChange = vi.fn();
+
+    async function* mockGen() {
+      yield {
+        type: 'system',
+        subtype: 'init',
+        session_id: 'test-session',
+        permissionMode: 'default',
+      };
+    }
+    query.mockReturnValue(mockGen());
+
+    await session.execute('test', {
+      onChunk: vi.fn(),
+      onPermissionRequest: vi.fn(),
+      onAskUser: vi.fn(),
+      onModeChange,
+    });
+
+    expect(session.getPermissionMode()).toBe('default');
+    expect(onModeChange).toHaveBeenCalledWith('default');
+  });
+
+  it('does not call onModeChange when system message has same permissionMode', async () => {
+    session.setPermissionMode('default');
+    const onModeChange = vi.fn();
+
+    async function* mockGen() {
+      yield {
+        type: 'system',
+        subtype: 'init',
+        session_id: 'test-session',
+        permissionMode: 'default',
+      };
+    }
+    query.mockReturnValue(mockGen());
+
+    await session.execute('test', {
+      onChunk: vi.fn(),
+      onPermissionRequest: vi.fn(),
+      onAskUser: vi.fn(),
+      onModeChange,
+    });
+
+    expect(onModeChange).not.toHaveBeenCalled();
+  });
+
+  it('handles missing onModeChange callback gracefully', async () => {
+    session.setPermissionMode('plan');
+
+    let toolResult;
+    query.mockImplementation(({ options }) => {
+      return (async function* () {
+        toolResult = await options.canUseTool(
+          'ExitPlanMode',
+          {},
+          { signal: new AbortController().signal },
+        );
+      })();
+    });
+
+    // Should not throw even without onModeChange callback
+    await session.execute('test', {
+      onChunk: vi.fn(),
+      onPermissionRequest: vi.fn(),
+      onAskUser: vi.fn(),
+      // No onModeChange callback
+    });
+
+    expect(toolResult.behavior).toBe('allow');
+    expect(session.getPermissionMode()).toBe('default');
+  });
+});

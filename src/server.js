@@ -229,6 +229,9 @@ async function handleSend(ws, msg) {
     onAskUser: (req) => {
       sendWs(ws, 'ask_user', req);
     },
+    onModeChange: (mode) => {
+      sendWs(ws, 'mode_changed', { mode });
+    },
   });
 
   sendWs(ws, 'claude_done', result);

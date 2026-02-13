@@ -60,6 +60,7 @@ export class ClaudeSession {
     // Callbacks set per-execution
     this._onPermissionRequest = null;
     this._onAskUser = null;
+    this._onModeChange = null;
   }
 
   get sessionId() {
@@ -88,9 +89,10 @@ export class ClaudeSession {
    * @param {function(string): void} callbacks.onChunk - Called with each text chunk.
    * @param {function(object): void} callbacks.onPermissionRequest - Called when a tool needs approval.
    * @param {function(object): void} callbacks.onAskUser - Called when Claude asks the user a question.
+   * @param {function(string): void} [callbacks.onModeChange] - Called when permission mode changes internally.
    * @returns {Promise<{success: boolean, output: string, error?: string}>}
    */
-  async execute(prompt, { onChunk, onPermissionRequest, onAskUser }) {
+  async execute(prompt, { onChunk, onPermissionRequest, onAskUser, onModeChange }) {
     if (this._isRunning) {
       return {
         success: false,
@@ -103,6 +105,7 @@ export class ClaudeSession {
     this._abortController = new AbortController();
     this._onPermissionRequest = onPermissionRequest;
     this._onAskUser = onAskUser;
+    this._onModeChange = onModeChange;
 
     const fullOutput = [];
     const pendingTools = [];
@@ -153,6 +156,17 @@ export class ClaudeSession {
         // Capture session ID from system init or result
         if (message.session_id) {
           this._sessionId = message.session_id;
+        }
+
+        // Check for permission mode changes in system messages
+        if (message.type === 'system' && message.permissionMode) {
+          const newMode = message.permissionMode;
+          if (newMode !== this._permissionMode) {
+            this._permissionMode = newMode;
+            if (this._onModeChange) {
+              this._onModeChange(newMode);
+            }
+          }
         }
 
         if (message.type === 'assistant') {
@@ -224,6 +238,7 @@ export class ClaudeSession {
       this._pendingUserAnswer = null;
       this._onPermissionRequest = null;
       this._onAskUser = null;
+      this._onModeChange = null;
     }
   }
 
@@ -239,6 +254,32 @@ export class ClaudeSession {
     // Handle AskUserQuestion specially — forward the question to the frontend
     if (toolName === 'AskUserQuestion') {
       return this._handleAskUser(input, signal);
+    }
+
+    // Handle ExitPlanMode — update mode and notify frontend
+    if (toolName === 'ExitPlanMode') {
+      // ExitPlanMode transitions from plan mode to default mode
+      if (this._permissionMode === 'plan') {
+        this._permissionMode = 'default';
+        if (this._onModeChange) {
+          this._onModeChange('default');
+        }
+      }
+      // Always allow ExitPlanMode
+      return { behavior: 'allow', updatedInput: input };
+    }
+
+    // Handle EnterPlanMode — update mode and notify frontend
+    if (toolName === 'EnterPlanMode') {
+      // EnterPlanMode transitions to plan mode
+      if (this._permissionMode !== 'plan') {
+        this._permissionMode = 'plan';
+        if (this._onModeChange) {
+          this._onModeChange('plan');
+        }
+      }
+      // Always allow EnterPlanMode
+      return { behavior: 'allow', updatedInput: input };
     }
 
     // If this tool was session-approved, auto-allow
