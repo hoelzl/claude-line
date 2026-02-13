@@ -1,0 +1,25 @@
+stages:
+  - lint
+  - test
+
+variables:
+  UV_CACHE_DIR: .uv-cache
+
+.uv-setup: &uv-setup
+  before_script:
+    - pip install uv
+    - uv sync --group dev
+
+lint:
+  stage: lint
+  image: python:3.11
+  <<: *uv-setup
+  script:
+    - uv run pre-commit run --all-files
+
+test:
+  stage: test
+  image: python:3.11
+  <<: *uv-setup
+  script:
+    - uv run tox
