@@ -68,7 +68,7 @@ class TestClaudeCodeManagerParseStreamJson:
         manager = ClaudeCodeManager()
         line = json.dumps({"type": "assistant", "message": "Hello world"})
         result = manager._parse_stream_json(line)
-        assert result == "Hello world"
+        assert result == {"type": "text", "text": "Hello world"}
 
     def test_extracts_text_from_assistant_content_blocks(self):
         manager = ClaudeCodeManager()
@@ -81,7 +81,7 @@ class TestClaudeCodeManagerParseStreamJson:
             }
         )
         result = manager._parse_stream_json(line)
-        assert result == "Some output"
+        assert result == {"type": "text", "text": "Some output"}
 
     def test_extracts_tool_use_from_content_blocks(self):
         manager = ClaudeCodeManager()
@@ -94,13 +94,49 @@ class TestClaudeCodeManagerParseStreamJson:
             }
         )
         result = manager._parse_stream_json(line)
-        assert "Read" in result
+        assert result == {"type": "tool_use", "names": ["Read"]}
+
+    def test_extracts_multiple_tool_uses_from_content_blocks(self):
+        manager = ClaudeCodeManager()
+        line = json.dumps(
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {"type": "tool_use", "name": "Read"},
+                        {"type": "tool_use", "name": "Bash"},
+                    ],
+                },
+            }
+        )
+        result = manager._parse_stream_json(line)
+        assert result == {"type": "tool_use", "names": ["Read", "Bash"]}
+
+    def test_extracts_text_and_tools_from_mixed_content(self):
+        manager = ClaudeCodeManager()
+        line = json.dumps(
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {"type": "tool_use", "name": "Read"},
+                        {"type": "text", "text": "Checking the file."},
+                    ],
+                },
+            }
+        )
+        result = manager._parse_stream_json(line)
+        assert result == {
+            "type": "text_and_tools",
+            "text": "Checking the file.",
+            "names": ["Read"],
+        }
 
     def test_extracts_result_text(self):
         manager = ClaudeCodeManager()
         line = json.dumps({"type": "result", "result": "Final output"})
         result = manager._parse_stream_json(line)
-        assert result == "Final output"
+        assert result == {"type": "text", "text": "Final output"}
 
     def test_captures_session_id_from_result(self):
         manager = ClaudeCodeManager()
@@ -118,13 +154,29 @@ class TestClaudeCodeManagerParseStreamJson:
     def test_returns_line_as_is_for_non_json(self):
         manager = ClaudeCodeManager()
         result = manager._parse_stream_json("plain text output")
-        assert result == "plain text output\n"
+        assert result == {"type": "text", "text": "plain text output\n"}
 
     def test_returns_none_for_unknown_type(self):
         manager = ClaudeCodeManager()
         line = json.dumps({"type": "unknown_type", "data": "something"})
         result = manager._parse_stream_json(line)
         assert result is None
+
+
+class TestFormatToolsSummary:
+    """Test the tool summary formatter."""
+
+    def test_single_tool_uses_singular_format(self):
+        result = ClaudeCodeManager._format_tools_summary(["Read"])
+        assert result == "\n[Using tool: Read]\n"
+
+    def test_multiple_tools_uses_plural_format(self):
+        result = ClaudeCodeManager._format_tools_summary(["Read", "Bash", "Edit"])
+        assert result == "\n[Tools: Read, Bash, Edit]\n"
+
+    def test_two_tools(self):
+        result = ClaudeCodeManager._format_tools_summary(["Grep", "Read"])
+        assert result == "\n[Tools: Grep, Read]\n"
 
 
 class TestClaudeCodeManagerResetSession:
@@ -206,3 +258,258 @@ class TestClaudeCodeManagerExecuteCommand:
             cmd_args = mock_exec.call_args[0]
             assert "--resume" in cmd_args
             assert "session-abc" in cmd_args
+
+
+class TestClaudeCodeManagerToolCoalescing:
+    """Test that execute() coalesces consecutive tool use notifications."""
+
+    @pytest.fixture()
+    def _make_process(self):
+        """Factory for mock processes with configurable stdout lines."""
+
+        async def _async_line_iter(lines):
+            for line in lines:
+                yield line
+
+        def _create(stdout_lines: list[str]):
+            process = AsyncMock()
+            process.returncode = 0
+            encoded = [line.encode("utf-8") + b"\n" for line in stdout_lines]
+            process.stdout = _async_line_iter(encoded)
+            stderr = AsyncMock()
+            stderr.read = AsyncMock(return_value=b"")
+            process.stderr = stderr
+            process.wait = AsyncMock()
+            return process
+
+        return _create
+
+    @pytest.mark.asyncio
+    async def test_consecutive_tools_coalesced_into_single_line(self, _make_process):
+        """Three consecutive tool_use messages should produce one summary."""
+        lines = [
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [{"type": "tool_use", "name": "Read"}],
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [{"type": "tool_use", "name": "Bash"}],
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [{"type": "tool_use", "name": "Edit"}],
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [{"type": "text", "text": "Done!"}],
+                    },
+                }
+            ),
+        ]
+        mock_process = _make_process(lines)
+        manager = ClaudeCodeManager(claude_command="claude")
+        chunks: list[str] = []
+
+        async def capture(chunk: str):
+            chunks.append(chunk)
+
+        with (
+            patch(
+                "claudeline.claude_code_manager.asyncio.create_subprocess_exec",
+                return_value=mock_process,
+            ),
+            patch.object(manager, "_find_claude", return_value="claude"),
+        ):
+            await manager.execute("test", on_output=capture)
+
+        assert len(chunks) == 2
+        assert chunks[0] == "\n[Tools: Read, Bash, Edit]\n"
+        assert chunks[1] == "Done!"
+
+    @pytest.mark.asyncio
+    async def test_single_tool_preserves_singular_format(self, _make_process):
+        """A single tool_use followed by text should use singular format."""
+        lines = [
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [{"type": "tool_use", "name": "Read"}],
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [{"type": "text", "text": "Here it is."}],
+                    },
+                }
+            ),
+        ]
+        mock_process = _make_process(lines)
+        manager = ClaudeCodeManager(claude_command="claude")
+        chunks: list[str] = []
+
+        async def capture(chunk: str):
+            chunks.append(chunk)
+
+        with (
+            patch(
+                "claudeline.claude_code_manager.asyncio.create_subprocess_exec",
+                return_value=mock_process,
+            ),
+            patch.object(manager, "_find_claude", return_value="claude"),
+        ):
+            await manager.execute("test", on_output=capture)
+
+        assert len(chunks) == 2
+        assert chunks[0] == "\n[Using tool: Read]\n"
+        assert chunks[1] == "Here it is."
+
+    @pytest.mark.asyncio
+    async def test_tools_at_end_of_stream_are_flushed(self, _make_process):
+        """Tools with no following text should still be emitted at stream end."""
+        lines = [
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [{"type": "tool_use", "name": "Bash"}],
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [{"type": "tool_use", "name": "Write"}],
+                    },
+                }
+            ),
+        ]
+        mock_process = _make_process(lines)
+        manager = ClaudeCodeManager(claude_command="claude")
+        chunks: list[str] = []
+
+        async def capture(chunk: str):
+            chunks.append(chunk)
+
+        with (
+            patch(
+                "claudeline.claude_code_manager.asyncio.create_subprocess_exec",
+                return_value=mock_process,
+            ),
+            patch.object(manager, "_find_claude", return_value="claude"),
+        ):
+            await manager.execute("test", on_output=capture)
+
+        assert len(chunks) == 1
+        assert chunks[0] == "\n[Tools: Bash, Write]\n"
+
+    @pytest.mark.asyncio
+    async def test_text_between_tool_groups_flushes_each_group(self, _make_process):
+        """Two groups of tools separated by text produce two summaries."""
+        lines = [
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [{"type": "tool_use", "name": "Read"}],
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [{"type": "text", "text": "First result."}],
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [{"type": "tool_use", "name": "Bash"}],
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [{"type": "tool_use", "name": "Edit"}],
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [{"type": "text", "text": "Second result."}],
+                    },
+                }
+            ),
+        ]
+        mock_process = _make_process(lines)
+        manager = ClaudeCodeManager(claude_command="claude")
+        chunks: list[str] = []
+
+        async def capture(chunk: str):
+            chunks.append(chunk)
+
+        with (
+            patch(
+                "claudeline.claude_code_manager.asyncio.create_subprocess_exec",
+                return_value=mock_process,
+            ),
+            patch.object(manager, "_find_claude", return_value="claude"),
+        ):
+            await manager.execute("test", on_output=capture)
+
+        assert len(chunks) == 4
+        assert chunks[0] == "\n[Using tool: Read]\n"
+        assert chunks[1] == "First result."
+        assert chunks[2] == "\n[Tools: Bash, Edit]\n"
+        assert chunks[3] == "Second result."
+
+    @pytest.mark.asyncio
+    async def test_text_only_stream_has_no_tool_lines(self, _make_process):
+        """Pure text output should pass through without tool summaries."""
+        lines = [
+            json.dumps({"type": "assistant", "message": "Hello"}),
+            json.dumps({"type": "assistant", "message": " world"}),
+        ]
+        mock_process = _make_process(lines)
+        manager = ClaudeCodeManager(claude_command="claude")
+        chunks: list[str] = []
+
+        async def capture(chunk: str):
+            chunks.append(chunk)
+
+        with (
+            patch(
+                "claudeline.claude_code_manager.asyncio.create_subprocess_exec",
+                return_value=mock_process,
+            ),
+            patch.object(manager, "_find_claude", return_value="claude"),
+        ):
+            await manager.execute("test", on_output=capture)
+
+        assert chunks == ["Hello", " world"]

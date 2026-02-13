@@ -105,15 +105,39 @@ class ClaudeCodeManager:
 
             # Stream stdout line by line (one JSON object per line)
             assert self._current_process.stdout is not None
+            pending_tools: list[str] = []
+
+            async def _flush_tools() -> None:
+                """Emit accumulated tool names as a single summary line."""
+                if pending_tools:
+                    summary = self._format_tools_summary(pending_tools)
+                    full_output.append(summary)
+                    await on_output(summary)
+                    pending_tools.clear()
+
             async for line in self._current_process.stdout:
                 decoded = line.decode("utf-8", errors="replace").strip()
                 if not decoded:
                     continue
 
-                chunk_text = self._parse_stream_json(decoded)
-                if chunk_text:
-                    full_output.append(chunk_text)
-                    await on_output(chunk_text)
+                parsed = self._parse_stream_json(decoded)
+                if parsed is None:
+                    continue
+
+                if parsed["type"] == "tool_use":
+                    pending_tools.extend(parsed["names"])
+                elif parsed["type"] == "text_and_tools":
+                    pending_tools.extend(parsed["names"])
+                    await _flush_tools()
+                    full_output.append(parsed["text"])
+                    await on_output(parsed["text"])
+                else:  # text
+                    await _flush_tools()
+                    full_output.append(parsed["text"])
+                    await on_output(parsed["text"])
+
+            # Flush any tools remaining at end of stream
+            await _flush_tools()
 
             await self._current_process.wait()
             return_code = self._current_process.returncode
@@ -158,13 +182,21 @@ class ClaudeCodeManager:
             self.session.is_running = False
             self._current_process = None
 
-    def _parse_stream_json(self, line: str) -> str | None:
-        """Parse a line of stream-json output from Claude Code."""
+    def _parse_stream_json(self, line: str) -> dict | None:
+        """Parse a line of stream-json output from Claude Code.
+
+        Returns:
+            A dict describing what was parsed, or None for no output.
+            - {"type": "text", "text": "..."} for text content
+            - {"type": "tool_use", "names": ["Read", "Bash"]} for tool use blocks
+            - {"type": "text_and_tools", "text": "...", "names": [...]} for both
+            - None when nothing to output (e.g. system messages)
+        """
         try:
             data = json.loads(line)
         except json.JSONDecodeError:
             # Not JSON — might be plain text output, return as-is
-            return line + "\n"
+            return {"type": "text", "text": line + "\n"}
 
         msg_type = data.get("type", "")
 
@@ -177,20 +209,27 @@ class ClaudeCodeManager:
         if msg_type == "assistant" and "message" in data:
             message = data["message"]
             if isinstance(message, str):
-                return message
+                return {"type": "text", "text": message}
             # Handle structured content blocks
             content = message.get("content", [])
-            parts = []
+            text_parts: list[str] = []
+            tool_names: list[str] = []
             for block in content:
                 if isinstance(block, dict):
                     if block.get("type") == "text":
-                        parts.append(block.get("text", ""))
+                        text_parts.append(block.get("text", ""))
                     elif block.get("type") == "tool_use":
-                        tool_name = block.get("name", "tool")
-                        parts.append(f"\n[Using tool: {tool_name}]\n")
+                        tool_names.append(block.get("name", "tool"))
                 elif isinstance(block, str):
-                    parts.append(block)
-            return "".join(parts) if parts else None
+                    text_parts.append(block)
+            text = "".join(text_parts) if text_parts else None
+            if text and tool_names:
+                return {"type": "text_and_tools", "text": text, "names": tool_names}
+            if tool_names:
+                return {"type": "tool_use", "names": tool_names}
+            if text:
+                return {"type": "text", "text": text}
+            return None
 
         # Result message
         if msg_type == "result":
@@ -199,13 +238,20 @@ class ClaudeCodeManager:
             if "session_id" in data:
                 self.session.session_id = data["session_id"]
             if result_text:
-                return result_text
+                return {"type": "text", "text": result_text}
             # Check for subtype content
             if data.get("subtype") == "success":
                 return None  # Already got the content via streaming
             return None
 
         return None
+
+    @staticmethod
+    def _format_tools_summary(tool_names: list[str]) -> str:
+        """Format a list of tool names into a summary string."""
+        if len(tool_names) == 1:
+            return f"\n[Using tool: {tool_names[0]}]\n"
+        return f"\n[Tools: {', '.join(tool_names)}]\n"
 
     async def cancel(self) -> bool:
         """Cancel the currently running command."""
