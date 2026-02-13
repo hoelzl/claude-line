@@ -28,7 +28,38 @@ Then start the server:
 uv run python -m claudeline
 ```
 
-The server starts on `0.0.0.0:8765` by default. Open `http://<your-computer-ip>:8765` on your phone (both devices must be on the same network).
+The server starts on `0.0.0.0:8765` by default.
+
+### HTTPS Setup (Required for Mobile Mic Access)
+
+Mobile browsers require HTTPS to allow microphone access (`getUserMedia`). Before connecting from a phone, generate a self-signed certificate and start the server with HTTPS:
+
+1. **Generate a certificate:**
+
+   ```shell
+   uv run python -m claudeline.generate_cert
+   ```
+
+   This creates `certs/cert.pem` and `certs/key.pem`, detects your local IP addresses, and prints instructions for trusting the certificate on iOS/Android.
+
+2. **Start the server with HTTPS:**
+
+   ```shell
+   uv run python -m claudeline --ssl-certfile certs/cert.pem --ssl-keyfile certs/key.pem
+   ```
+
+   Or set environment variables (e.g. in `.env`):
+
+   ```shell
+   SSL_CERTFILE=certs/cert.pem
+   SSL_KEYFILE=certs/key.pem
+   ```
+
+3. **Trust the certificate on your phone:**
+   - **iOS:** Transfer `cert.pem` to your iPhone (AirDrop, email, or HTTP), install the profile, then go to Settings > General > About > Certificate Trust Settings and enable full trust.
+   - **Android:** Transfer `cert.pem`, then go to Settings > Security > Install certificate > CA certificate.
+
+4. **Open `https://<your-computer-ip>:8765`** on your phone (both devices must be on the same network).
 
 You can override host and port via CLI flags or environment variables:
 
