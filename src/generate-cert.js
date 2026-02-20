@@ -36,7 +36,7 @@ export function getLocalIps() {
 }
 
 /**
- * Generate a self-signed EC certificate with SANs for local IPs.
+ * Generate a self-signed RSA certificate with SANs for local IPs.
  *
  * @param {string[]} ips - IP addresses to include as SANs.
  * @param {object} [options]
@@ -182,7 +182,7 @@ export async function interactiveMain() {
   }
 
   console.log(`\nGenerating certificate for IPs: ${selectedIps.join(', ') || 'none'}`);
-  const { certPath, keyPath } = generateCertificate(selectedIps);
+  const { certPath, keyPath } = await generateCertificate(selectedIps);
   printInstructions(certPath, keyPath, selectedIps);
 }
 

@@ -291,11 +291,8 @@ export class ClaudeSession {
 
     // Send permission request to frontend and wait for response
     return new Promise((resolve, reject) => {
-      this._pendingPermission = { resolve, toolName, input };
-
       // If the signal is already aborted, reject immediately
       if (signal.aborted) {
-        this._pendingPermission = null;
         reject(new DOMException('Aborted', 'AbortError'));
         return;
       }
@@ -305,6 +302,13 @@ export class ClaudeSession {
         reject(new DOMException('Aborted', 'AbortError'));
       };
       signal.addEventListener('abort', onAbort, { once: true });
+
+      const cleanupResolve = (value) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      };
+
+      this._pendingPermission = { resolve: cleanupResolve, toolName, input };
 
       if (this._onPermissionRequest) {
         this._onPermissionRequest({ toolName, input, description });
@@ -321,10 +325,7 @@ export class ClaudeSession {
    */
   async _handleAskUser(input, signal) {
     return new Promise((resolve, reject) => {
-      this._pendingUserAnswer = { resolve, input };
-
       if (signal.aborted) {
-        this._pendingUserAnswer = null;
         reject(new DOMException('Aborted', 'AbortError'));
         return;
       }
@@ -334,6 +335,13 @@ export class ClaudeSession {
         reject(new DOMException('Aborted', 'AbortError'));
       };
       signal.addEventListener('abort', onAbort, { once: true });
+
+      const cleanupResolve = (value) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      };
+
+      this._pendingUserAnswer = { resolve: cleanupResolve, input };
 
       if (this._onAskUser) {
         this._onAskUser({ questions: input.questions });

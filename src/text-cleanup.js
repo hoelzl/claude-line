@@ -27,6 +27,37 @@ exactly as spoken.
 - If the input is already clean, return it unchanged.`;
 
 /**
+ * Call a cleanup LLM API and extract the cleaned text.
+ *
+ * @param {object} options
+ * @param {string} options.url - API endpoint.
+ * @param {Record<string, string>} options.headers - Request headers.
+ * @param {object} options.body - Request body (will be JSON-serialized).
+ * @param {function(object): string|undefined} options.extractText - Extract text from parsed response.
+ * @returns {Promise<string>} The cleaned text.
+ */
+async function callCleanupApi({ url, headers, body, extractText }) {
+  const response = await fetch(url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(15000),
+  });
+
+  if (!response.ok) {
+    const errorBody = (await response.text()).slice(0, 500);
+    throw new Error(`API error (${response.status}): ${errorBody}`);
+  }
+
+  const result = await response.json();
+  const cleaned = extractText(result);
+  if (typeof cleaned !== 'string') {
+    throw new Error('Unexpected API response format');
+  }
+  return cleaned.trim();
+}
+
+/**
  * Run an LLM cleanup pass on transcribed text.
  *
  * @param {string} rawText - The raw transcribed text.
@@ -69,34 +100,23 @@ async function _cleanupAnthropic(rawText) {
   }
 
   try {
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
+    const cleaned = await callCleanupApi({
+      url: 'https://api.anthropic.com/v1/messages',
       headers: {
         'x-api-key': apiKey,
         'anthropic-version': '2023-06-01',
         'content-type': 'application/json',
       },
-      body: JSON.stringify({
+      body: {
         model: config.cleanupModel,
         max_tokens: 2048,
         system: CLEANUP_SYSTEM_PROMPT,
         messages: [{ role: 'user', content: rawText }],
-      }),
-      signal: AbortSignal.timeout(15000),
+      },
+      extractText: (result) => result?.content?.[0]?.text,
     });
 
-    if (!response.ok) {
-      const errorBody = (await response.text()).slice(0, 500);
-      throw new Error(`API error (${response.status}): ${errorBody}`);
-    }
-
-    const result = await response.json();
-    const cleaned = result.content[0].text.trim();
-    return {
-      text: cleaned,
-      original: rawText,
-      success: true,
-    };
+    return { text: cleaned, original: rawText, success: true };
   } catch (err) {
     return {
       text: rawText,
@@ -119,13 +139,13 @@ async function _cleanupOpenai(rawText) {
   }
 
   try {
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
+    const cleaned = await callCleanupApi({
+      url: 'https://api.openai.com/v1/chat/completions',
       headers: {
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
+      body: {
         model: 'gpt-4o-mini',
         messages: [
           { role: 'system', content: CLEANUP_SYSTEM_PROMPT },
@@ -133,22 +153,11 @@ async function _cleanupOpenai(rawText) {
         ],
         max_tokens: 2048,
         temperature: 0.1,
-      }),
-      signal: AbortSignal.timeout(15000),
+      },
+      extractText: (result) => result?.choices?.[0]?.message?.content,
     });
 
-    if (!response.ok) {
-      const errorBody = (await response.text()).slice(0, 500);
-      throw new Error(`API error (${response.status}): ${errorBody}`);
-    }
-
-    const result = await response.json();
-    const cleaned = result.choices[0].message.content.trim();
-    return {
-      text: cleaned,
-      original: rawText,
-      success: true,
-    };
+    return { text: cleaned, original: rawText, success: true };
   } catch (err) {
     return {
       text: rawText,

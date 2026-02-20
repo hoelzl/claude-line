@@ -12,7 +12,7 @@ import { dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'url';
 
 import express from 'express';
-import { WebSocketServer } from 'ws';
+import { WebSocket, WebSocketServer } from 'ws';
 
 import { ClaudeSession } from './claude-session.js';
 import { config } from './config.js';
@@ -20,6 +20,9 @@ import { cleanupText } from './text-cleanup.js';
 import { transcribeAudio } from './transcription.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+/** All currently connected WebSocket clients. */
+const connectedClients = new Set();
 
 /**
  * Format a working directory path for compact display.
@@ -102,7 +105,7 @@ export { claudeSession };
  * @param {object} data
  */
 function sendWs(ws, type, data = {}) {
-  if (ws.readyState === ws.OPEN) {
+  if (ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type, ...data }));
   }
 }
@@ -110,12 +113,30 @@ function sendWs(ws, type, data = {}) {
 export { sendWs };
 
 /**
+ * Broadcast a typed JSON message to all connected clients.
+ *
+ * @param {string} type
+ * @param {object} data
+ */
+function broadcastWs(type, data = {}) {
+  const msg = JSON.stringify({ type, ...data });
+  for (const client of connectedClients) {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(msg);
+    }
+  }
+}
+
+export { broadcastWs };
+
+/**
  * Handle a new WebSocket connection.
  *
  * @param {import('ws').WebSocket} ws
  */
 function handleConnection(ws) {
-  console.log('WebSocket client connected');
+  connectedClients.add(ws);
+  console.log(`WebSocket client connected (${connectedClients.size} total)`);
 
   // Send initial config
   sendWs(ws, 'config', {
@@ -123,6 +144,11 @@ function handleConnection(ws) {
     work_dir_display: formatWorkDir(claudeSession.workDir),
     permission_mode: claudeSession.getPermissionMode(),
   });
+
+  // If a command is currently running, let the new client know
+  if (claudeSession.isRunning) {
+    sendWs(ws, 'status', { message: 'Claude Code is running...' });
+  }
 
   ws.on('message', (raw) => {
     let msg;
@@ -161,7 +187,8 @@ function handleConnection(ws) {
   });
 
   ws.on('close', () => {
-    console.log('WebSocket client disconnected');
+    connectedClients.delete(ws);
+    console.log(`WebSocket client disconnected (${connectedClients.size} remaining)`);
   });
 
   ws.on('error', (err) => {
@@ -173,11 +200,16 @@ function handleConnection(ws) {
  * Handle incoming audio data — transcribe and optionally clean up.
  */
 async function handleAudio(ws, msg) {
-  const audioB64 = msg.data || '';
-  const mimeType = msg.mime_type || 'audio/webm';
+  const audioB64 = msg.data;
+  const mimeType = msg.mime_type;
 
-  if (!audioB64) {
+  if (typeof audioB64 !== 'string' || !audioB64) {
     sendWs(ws, 'error', { message: 'No audio data received' });
+    return;
+  }
+
+  if (typeof mimeType !== 'string' || !mimeType) {
+    sendWs(ws, 'error', { message: 'Missing mime_type' });
     return;
   }
 
@@ -209,32 +241,33 @@ async function handleAudio(ws, msg) {
 
 /**
  * Send a command to Claude Code and stream the response.
+ * Broadcasts output to all connected clients so every tab/device sees it.
  */
 async function handleSend(ws, msg) {
-  const text = (msg.text || '').trim();
+  const text = typeof msg.text === 'string' ? msg.text.trim() : '';
   if (!text) {
     sendWs(ws, 'error', { message: 'Empty command' });
     return;
   }
 
-  sendWs(ws, 'status', { message: 'Running Claude Code...' });
+  broadcastWs('status', { message: 'Running Claude Code...' });
 
   const result = await claudeSession.execute(text, {
     onChunk: (chunk) => {
-      sendWs(ws, 'claude_chunk', { text: chunk });
+      broadcastWs('claude_chunk', { text: chunk });
     },
     onPermissionRequest: (req) => {
-      sendWs(ws, 'permission_request', req);
+      broadcastWs('permission_request', req);
     },
     onAskUser: (req) => {
-      sendWs(ws, 'ask_user', req);
+      broadcastWs('ask_user', req);
     },
     onModeChange: (mode) => {
-      sendWs(ws, 'mode_changed', { mode });
+      broadcastWs('mode_changed', { mode });
     },
   });
 
-  sendWs(ws, 'claude_done', result);
+  broadcastWs('claude_done', result);
 }
 
 /**
@@ -243,7 +276,7 @@ async function handleSend(ws, msg) {
 function handleCancel(ws) {
   const cancelled = claudeSession.cancel();
   if (cancelled) {
-    sendWs(ws, 'status', { message: 'Command cancelled', auto_dismiss: 2000 });
+    broadcastWs('status', { message: 'Command cancelled', auto_dismiss: 2000 });
   } else {
     sendWs(ws, 'status', { message: 'Nothing to cancel', auto_dismiss: 2000 });
   }
@@ -254,7 +287,7 @@ function handleCancel(ws) {
  */
 function handleReset(ws) {
   claudeSession.reset();
-  sendWs(ws, 'status', {
+  broadcastWs('status', {
     message: 'Session reset — starting fresh conversation',
     auto_dismiss: 2000,
   });
@@ -266,21 +299,28 @@ function handleReset(ws) {
 function handleSetMode(ws, msg) {
   const mode = msg.mode;
   const validModes = ['default', 'plan', 'bypassPermissions'];
-  if (!validModes.includes(mode)) {
+  if (typeof mode !== 'string' || !validModes.includes(mode)) {
     sendWs(ws, 'error', { message: `Invalid mode: ${mode}` });
     return;
   }
   claudeSession.setPermissionMode(mode);
-  sendWs(ws, 'mode_changed', { mode });
+  broadcastWs('mode_changed', { mode });
 }
 
 /**
  * Handle a permission response from the frontend.
  */
 function handlePermissionResponse(ws, msg) {
+  const validActions = ['allow', 'allowSession', 'deny'];
+  const action = msg.action;
+  if (typeof action !== 'string' || !validActions.includes(action)) {
+    sendWs(ws, 'error', { message: `Invalid permission action: ${action}` });
+    return;
+  }
+
   claudeSession.resolvePermission({
-    action: msg.action,
-    message: msg.message,
+    action,
+    message: typeof msg.message === 'string' ? msg.message : undefined,
   });
 }
 
@@ -288,7 +328,12 @@ function handlePermissionResponse(ws, msg) {
  * Handle a user answer to an AskUserQuestion.
  */
 function handleUserAnswer(ws, msg) {
-  claudeSession.resolveUserAnswer(msg.answers || {});
+  const answers = msg.answers;
+  if (typeof answers !== 'object' || answers === null || Array.isArray(answers)) {
+    sendWs(ws, 'error', { message: 'Invalid answers format' });
+    return;
+  }
+  claudeSession.resolveUserAnswer(answers);
 }
 
 export {
@@ -299,6 +344,7 @@ export {
   handleSetMode,
   handlePermissionResponse,
   handleUserAnswer,
+  connectedClients,
 };
 
 /**

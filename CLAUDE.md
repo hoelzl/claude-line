@@ -61,6 +61,7 @@ All configuration is via environment variables (or a `.env` file in the project 
 | `GROQ_API_KEY`           | Yes (if using Groq) | —                          | Get from console.groq.com          |
 | `OPENAI_API_KEY`         | If using OpenAI     | —                          | Alternative transcription provider |
 | `TRANSCRIPTION_PROVIDER` | No                  | `groq`                     | `groq` or `openai`                 |
+| `WHISPER_MODEL`          | No                  | `whisper-large-v3-turbo`   | Whisper model for transcription    |
 | `CLAUDE_WORK_DIR`        | No                  | `.`                        | Working directory for Claude Code  |
 | `HOST`                   | No                  | `0.0.0.0`                  | Server bind address                |
 | `PORT`                   | No                  | `8765`                     | Server port                        |

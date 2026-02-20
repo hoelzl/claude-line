@@ -1,117 +1,163 @@
-import { describe, it, expect, beforeEach } from 'vitest';
-import { config } from '../src/config.js';
+import { describe, it, expect } from 'vitest';
+import { isAbsolute } from 'path';
+import { createConfig } from '../src/config.js';
 
-describe('config', () => {
+describe('createConfig', () => {
   describe('defaults', () => {
+    const cfg = createConfig({});
+
     it('has default host 0.0.0.0', () => {
-      // HOST not set in test env, so default applies
-      expect(config.host).toBeDefined();
-      expect(typeof config.host).toBe('string');
+      expect(cfg.host).toBe('0.0.0.0');
     });
 
-    it('has a numeric port', () => {
-      expect(typeof config.port).toBe('number');
-      expect(config.port).toBeGreaterThan(0);
+    it('has default port 8765', () => {
+      expect(cfg.port).toBe(8765);
     });
 
-    it('has a transcription provider', () => {
-      expect(typeof config.transcriptionProvider).toBe('string');
-      expect(config.transcriptionProvider.length).toBeGreaterThan(0);
+    it('has default transcription provider groq', () => {
+      expect(cfg.transcriptionProvider).toBe('groq');
     });
 
-    it('has a whisper model', () => {
-      expect(config.whisperModel).toBe('whisper-large-v3-turbo');
+    it('has default whisper model', () => {
+      expect(cfg.whisperModel).toBe('whisper-large-v3-turbo');
     });
 
     it('has cleanup disabled by default', () => {
-      // Unless CLEANUP_ENABLED=true is set in the environment
-      expect(typeof config.cleanupEnabled).toBe('boolean');
+      expect(cfg.cleanupEnabled).toBe(false);
     });
 
-    it('has cleanup provider set', () => {
-      expect(typeof config.cleanupProvider).toBe('string');
+    it('has default cleanup provider anthropic', () => {
+      expect(cfg.cleanupProvider).toBe('anthropic');
     });
 
     it('has claudeWorkDir as absolute path', () => {
-      // resolve('.') produces an absolute path
-      expect(config.claudeWorkDir.length).toBeGreaterThan(1);
+      expect(isAbsolute(cfg.claudeWorkDir)).toBe(true);
+    });
+
+    it('has default cleanup model', () => {
+      expect(cfg.cleanupModel).toBe('claude-sonnet-4-20250514');
+    });
+
+    it('has empty API keys by default', () => {
+      expect(cfg.groqApiKey).toBe('');
+      expect(cfg.openaiApiKey).toBe('');
+      expect(cfg.anthropicApiKey).toBe('');
+    });
+
+    it('has empty SSL paths by default', () => {
+      expect(cfg.sslCertfile).toBe('');
+      expect(cfg.sslKeyfile).toBe('');
+    });
+  });
+
+  describe('custom values', () => {
+    it('reads HOST from env', () => {
+      const cfg = createConfig({ HOST: '127.0.0.1' });
+      expect(cfg.host).toBe('127.0.0.1');
+    });
+
+    it('reads PORT from env', () => {
+      const cfg = createConfig({ PORT: '3000' });
+      expect(cfg.port).toBe(3000);
+    });
+
+    it('reads TRANSCRIPTION_PROVIDER from env', () => {
+      const cfg = createConfig({ TRANSCRIPTION_PROVIDER: 'openai' });
+      expect(cfg.transcriptionProvider).toBe('openai');
+    });
+
+    it('reads WHISPER_MODEL from env', () => {
+      const cfg = createConfig({ WHISPER_MODEL: 'whisper-1' });
+      expect(cfg.whisperModel).toBe('whisper-1');
+    });
+
+    it('reads CLEANUP_ENABLED from env', () => {
+      const cfg = createConfig({ CLEANUP_ENABLED: 'true' });
+      expect(cfg.cleanupEnabled).toBe(true);
+    });
+
+    it('CLEANUP_ENABLED requires exact string true', () => {
+      const cfg = createConfig({ CLEANUP_ENABLED: 'yes' });
+      expect(cfg.cleanupEnabled).toBe(false);
+    });
+
+    it('reads API keys from env', () => {
+      const cfg = createConfig({
+        GROQ_API_KEY: 'gk',
+        OPENAI_API_KEY: 'ok',
+        ANTHROPIC_API_KEY: 'ak',
+      });
+      expect(cfg.groqApiKey).toBe('gk');
+      expect(cfg.openaiApiKey).toBe('ok');
+      expect(cfg.anthropicApiKey).toBe('ak');
+    });
+  });
+
+  describe('port validation', () => {
+    it('throws on non-numeric port', () => {
+      expect(() => createConfig({ PORT: 'abc' })).toThrow('Invalid PORT');
+    });
+
+    it('throws on port 0', () => {
+      expect(() => createConfig({ PORT: '0' })).toThrow('Invalid PORT');
+    });
+
+    it('throws on port above 65535', () => {
+      expect(() => createConfig({ PORT: '99999' })).toThrow('Invalid PORT');
+    });
+
+    it('throws on negative port', () => {
+      expect(() => createConfig({ PORT: '-1' })).toThrow('Invalid PORT');
     });
   });
 
   describe('SSL getters', () => {
-    it('sslEnabled getter returns boolean', () => {
-      expect(typeof config.sslEnabled).toBe('boolean');
+    it('sslEnabled is false when no certs configured', () => {
+      const cfg = createConfig({});
+      expect(cfg.sslEnabled).toBe(false);
     });
 
-    it('sslEnabled requires both certfile and keyfile', () => {
-      // With default empty strings, SSL should be disabled
-      const originalCert = config.sslCertfile;
-      const originalKey = config.sslKeyfile;
+    it('sslEnabled is false when only certfile set', () => {
+      const cfg = createConfig({ SSL_CERTFILE: 'cert.pem' });
+      expect(cfg.sslEnabled).toBe(false);
+    });
 
-      // Test the getter logic: both must be truthy
-      config.sslCertfile = '';
-      config.sslKeyfile = '';
-      expect(config.sslEnabled).toBe(false);
+    it('sslEnabled is false when only keyfile set', () => {
+      const cfg = createConfig({ SSL_KEYFILE: 'key.pem' });
+      expect(cfg.sslEnabled).toBe(false);
+    });
 
-      config.sslCertfile = 'cert.pem';
-      config.sslKeyfile = '';
-      expect(config.sslEnabled).toBe(false);
-
-      config.sslCertfile = '';
-      config.sslKeyfile = 'key.pem';
-      expect(config.sslEnabled).toBe(false);
-
-      config.sslCertfile = 'cert.pem';
-      config.sslKeyfile = 'key.pem';
-      expect(config.sslEnabled).toBe(true);
-
-      // Restore
-      config.sslCertfile = originalCert;
-      config.sslKeyfile = originalKey;
+    it('sslEnabled is true when both certfile and keyfile set', () => {
+      const cfg = createConfig({ SSL_CERTFILE: 'cert.pem', SSL_KEYFILE: 'key.pem' });
+      expect(cfg.sslEnabled).toBe(true);
     });
   });
 
   describe('transcription getters', () => {
     it('transcriptionApiKey returns groq key when provider is groq', () => {
-      const origProvider = config.transcriptionProvider;
-      const origKey = config.groqApiKey;
-
-      config.transcriptionProvider = 'groq';
-      config.groqApiKey = 'groq-test-key';
-      expect(config.transcriptionApiKey).toBe('groq-test-key');
-
-      config.transcriptionProvider = origProvider;
-      config.groqApiKey = origKey;
+      const cfg = createConfig({
+        TRANSCRIPTION_PROVIDER: 'groq',
+        GROQ_API_KEY: 'groq-key',
+      });
+      expect(cfg.transcriptionApiKey).toBe('groq-key');
     });
 
     it('transcriptionApiKey returns openai key when provider is openai', () => {
-      const origProvider = config.transcriptionProvider;
-      const origKey = config.openaiApiKey;
-
-      config.transcriptionProvider = 'openai';
-      config.openaiApiKey = 'openai-test-key';
-      expect(config.transcriptionApiKey).toBe('openai-test-key');
-
-      config.transcriptionProvider = origProvider;
-      config.openaiApiKey = origKey;
+      const cfg = createConfig({
+        TRANSCRIPTION_PROVIDER: 'openai',
+        OPENAI_API_KEY: 'openai-key',
+      });
+      expect(cfg.transcriptionApiKey).toBe('openai-key');
     });
 
     it('transcriptionApiUrl contains groq.com when provider is groq', () => {
-      const origProvider = config.transcriptionProvider;
-
-      config.transcriptionProvider = 'groq';
-      expect(config.transcriptionApiUrl).toContain('groq.com');
-
-      config.transcriptionProvider = origProvider;
+      const cfg = createConfig({ TRANSCRIPTION_PROVIDER: 'groq' });
+      expect(cfg.transcriptionApiUrl).toContain('groq.com');
     });
 
     it('transcriptionApiUrl contains openai.com when provider is openai', () => {
-      const origProvider = config.transcriptionProvider;
-
-      config.transcriptionProvider = 'openai';
-      expect(config.transcriptionApiUrl).toContain('openai.com');
-
-      config.transcriptionProvider = origProvider;
+      const cfg = createConfig({ TRANSCRIPTION_PROVIDER: 'openai' });
+      expect(cfg.transcriptionApiUrl).toContain('openai.com');
     });
   });
 });

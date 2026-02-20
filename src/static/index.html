@@ -862,11 +862,11 @@
           <div class="work-dir" id="workDir"></div>
         </div>
         <div class="mode-toggle" id="modeToggle">
-          <button class="mode-btn active" data-mode="plan">
+          <button class="mode-btn" data-mode="plan">
             <span class="mode-icon">P</span>
             <span class="mode-label">Plan</span>
           </button>
-          <button class="mode-btn" data-mode="default">
+          <button class="mode-btn active" data-mode="default">
             <span class="mode-icon">C</span>
             <span class="mode-label">Code</span>
           </button>
@@ -1020,9 +1020,11 @@
         let analyser = null;
         let animFrame = null;
         let audioStream = null;
+        let audioCtx = null;
         let currentAssistantBubble = null;
         let statusDismissTimer = null;
         let currentMode = 'default';
+        let reconnectDelay = 2000;
 
         // ── WebSocket ──
         function connect() {
@@ -1032,6 +1034,7 @@
 
           ws.onopen = () => {
             connDot.classList.add('connected');
+            reconnectDelay = 2000;
             showStatus('Connected', false);
             setTimeout(() => hideStatus(), 1500);
           };
@@ -1039,7 +1042,8 @@
           ws.onclose = () => {
             connDot.classList.remove('connected');
             showStatus('Disconnected — reconnecting...', true);
-            setTimeout(connect, 2000);
+            setTimeout(connect, reconnectDelay);
+            reconnectDelay = Math.min(reconnectDelay * 2, 30000);
           };
 
           ws.onerror = () => {
@@ -1047,7 +1051,13 @@
           };
 
           ws.onmessage = (event) => {
-            const msg = JSON.parse(event.data);
+            let msg;
+            try {
+              msg = JSON.parse(event.data);
+            } catch {
+              console.error('Received malformed JSON from server');
+              return;
+            }
             handleMessage(msg);
           };
         }
@@ -1173,7 +1183,7 @@
 
         // ── Ask User Question ──
         function handleAskUser(msg) {
-          askUserContent.innerHTML = '';
+          askUserContent.replaceChildren();
           const questions = msg.questions || [];
           const allAnswers = {}; // Track answers for all questions
           const multiSelectSets = {}; // Track multi-select selections per question
@@ -1297,7 +1307,7 @@
 
         function hideAskUserBar() {
           askUserBar.classList.remove('visible');
-          askUserContent.innerHTML = '';
+          askUserContent.replaceChildren();
         }
 
         function sendUserAnswer(answers) {
@@ -1504,14 +1514,20 @@
 
         // ── Waveform Visualization ──
         function startVisualization(stream) {
-          const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+          // Reuse or create AudioContext (browsers limit concurrent instances)
+          if (!audioCtx || audioCtx.state === 'closed') {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+          } else if (audioCtx.state === 'suspended') {
+            audioCtx.resume();
+          }
+
           const source = audioCtx.createMediaStreamSource(stream);
           analyser = audioCtx.createAnalyser();
           analyser.fftSize = 64;
           source.connect(analyser);
 
           const barCount = 24;
-          waveformEl.innerHTML = '';
+          waveformEl.replaceChildren();
           for (let i = 0; i < barCount; i++) {
             const bar = document.createElement('div');
             bar.className = 'bar';

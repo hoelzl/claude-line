@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Mock the SDK
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
@@ -40,22 +40,78 @@ describe('ClaudeSession', () => {
       expect(session.getPermissionMode()).toBe('plan');
     });
 
-    it('clears session-allowed tools on mode change', () => {
-      session._sessionAllowedTools.add('Bash');
+    it('clears session-allowed tools on mode change', async () => {
+      // Build up a session-allowed tool via allowSession
+      query.mockImplementation(({ options }) => {
+        return (async function* () {
+          await options.canUseTool(
+            'Bash',
+            { command: 'ls' },
+            { signal: new AbortController().signal },
+          );
+        })();
+      });
+
+      const execPromise = session.execute('test', {
+        onChunk: vi.fn(),
+        onPermissionRequest: vi.fn(),
+        onAskUser: vi.fn(),
+      });
+
+      await new Promise((r) => setTimeout(r, 10));
+      session.resolvePermission({ action: 'allowSession' });
+      await execPromise;
+
+      // Now change mode — session-allowed tools should be cleared
       session.setPermissionMode('plan');
-      expect(session._sessionAllowedTools.size).toBe(0);
+
+      // Verify Bash is no longer auto-approved by running another execution
+      let permissionRequested = false;
+      query.mockImplementation(({ options }) => {
+        return (async function* () {
+          await options.canUseTool(
+            'Bash',
+            { command: 'ls' },
+            { signal: new AbortController().signal },
+          );
+        })();
+      });
+
+      const execPromise2 = session.execute('test2', {
+        onChunk: vi.fn(),
+        onPermissionRequest: () => {
+          permissionRequested = true;
+        },
+        onAskUser: vi.fn(),
+      });
+
+      await new Promise((r) => setTimeout(r, 10));
+      session.resolvePermission({ action: 'allow' });
+      await execPromise2;
+
+      expect(permissionRequested).toBe(true);
     });
   });
 
   describe('reset', () => {
-    it('clears session ID', () => {
-      session._sessionId = 'old-session';
+    it('clears session ID after it was set', async () => {
+      async function* mockGen() {
+        yield { type: 'system', subtype: 'init', session_id: 'some-session' };
+      }
+      query.mockReturnValue(mockGen());
+
+      await session.execute('test', {
+        onChunk: vi.fn(),
+        onPermissionRequest: vi.fn(),
+        onAskUser: vi.fn(),
+      });
+      expect(session.sessionId).toBe('some-session');
+
       session.reset();
       expect(session.sessionId).toBeNull();
     });
 
     it('clears running state', () => {
-      session._isRunning = true;
       session.reset();
       expect(session.isRunning).toBe(false);
     });
@@ -65,12 +121,6 @@ describe('ClaudeSession', () => {
       session.reset();
       expect(session.getPermissionMode()).toBe('default');
     });
-
-    it('clears session-allowed tools', () => {
-      session._sessionAllowedTools.add('Bash');
-      session.reset();
-      expect(session._sessionAllowedTools.size).toBe(0);
-    });
   });
 
   describe('cancel', () => {
@@ -78,19 +128,53 @@ describe('ClaudeSession', () => {
       expect(session.cancel()).toBe(false);
     });
 
-    it('returns true when running and aborts', () => {
-      session._isRunning = true;
-      session._abortController = new AbortController();
+    it('returns true when running and aborts', async () => {
+      // Use the session's own abort signal so cancel() propagates correctly
+      query.mockImplementation(({ options }) => {
+        return (async function* () {
+          await new Promise((resolve, reject) => {
+            options.abortController.signal.addEventListener('abort', () => {
+              reject(new DOMException('Aborted', 'AbortError'));
+            });
+          });
+        })();
+      });
+
+      const execPromise = session.execute('test', {
+        onChunk: vi.fn(),
+        onPermissionRequest: vi.fn(),
+        onAskUser: vi.fn(),
+      });
+
+      await new Promise((r) => setTimeout(r, 10));
+      expect(session.isRunning).toBe(true);
       expect(session.cancel()).toBe(true);
-      expect(session._abortController.signal.aborted).toBe(true);
+
+      const result = await execPromise;
+      expect(result.error).toBe('Cancelled');
     });
   });
 
   describe('execute', () => {
     it('returns error when already running', async () => {
-      session._isRunning = true;
+      let blockResolve;
+      query.mockImplementation(() => {
+        return (async function* () {
+          await new Promise((resolve) => {
+            blockResolve = resolve;
+          });
+        })();
+      });
 
-      const result = await session.execute('test', {
+      const firstExec = session.execute('first', {
+        onChunk: vi.fn(),
+        onPermissionRequest: vi.fn(),
+        onAskUser: vi.fn(),
+      });
+
+      await new Promise((r) => setTimeout(r, 10));
+
+      const result = await session.execute('second', {
         onChunk: vi.fn(),
         onPermissionRequest: vi.fn(),
         onAskUser: vi.fn(),
@@ -98,10 +182,12 @@ describe('ClaudeSession', () => {
 
       expect(result.success).toBe(false);
       expect(result.error).toContain('already running');
+
+      blockResolve();
+      await firstExec;
     });
 
     it('passes prompt to SDK query', async () => {
-      // Create a mock async generator that yields nothing
       async function* mockGen() {}
       query.mockReturnValue(mockGen());
 
@@ -162,17 +248,27 @@ describe('ClaudeSession', () => {
     });
 
     it('passes resume session ID when available', async () => {
-      session._sessionId = 'prev-session-123';
-      async function* mockGen() {}
-      query.mockReturnValue(mockGen());
-
-      await session.execute('test', {
+      // First execution to set session ID
+      async function* firstGen() {
+        yield { type: 'system', subtype: 'init', session_id: 'prev-session-123' };
+      }
+      query.mockReturnValue(firstGen());
+      await session.execute('first', {
         onChunk: vi.fn(),
         onPermissionRequest: vi.fn(),
         onAskUser: vi.fn(),
       });
 
-      const { options } = query.mock.calls[0][0];
+      // Second execution should pass resume
+      async function* secondGen() {}
+      query.mockReturnValue(secondGen());
+      await session.execute('second', {
+        onChunk: vi.fn(),
+        onPermissionRequest: vi.fn(),
+        onAskUser: vi.fn(),
+      });
+
+      const { options } = query.mock.calls[1][0];
       expect(options.resume).toBe('prev-session-123');
     });
 
@@ -360,47 +456,106 @@ describe('ClaudeSession', () => {
     });
 
     it('resolves with allow behavior', async () => {
-      const pending = { toolName: 'Bash', input: { command: 'ls' } };
-      let resolved;
-      session._pendingPermission = {
-        resolve: (val) => {
-          resolved = val;
-        },
-        ...pending,
-      };
+      let toolResult;
+      query.mockImplementation(({ options }) => {
+        return (async function* () {
+          toolResult = await options.canUseTool(
+            'Bash',
+            { command: 'ls' },
+            { signal: new AbortController().signal },
+          );
+        })();
+      });
 
+      const execPromise = session.execute('test', {
+        onChunk: vi.fn(),
+        onPermissionRequest: vi.fn(),
+        onAskUser: vi.fn(),
+      });
+
+      await new Promise((r) => setTimeout(r, 10));
       session.resolvePermission({ action: 'allow' });
+      await execPromise;
 
-      expect(resolved.behavior).toBe('allow');
-      expect(resolved.updatedInput).toEqual({ command: 'ls' });
+      expect(toolResult.behavior).toBe('allow');
+      expect(toolResult.updatedInput).toEqual({ command: 'ls' });
     });
 
     it('adds tool to session-allowed on allowSession', async () => {
-      session._pendingPermission = {
-        resolve: vi.fn(),
-        toolName: 'Read',
-        input: { file_path: '/test' },
-      };
+      let firstResult;
+      let secondResult;
 
+      // First execution: approve Read with allowSession
+      query.mockImplementation(({ options }) => {
+        return (async function* () {
+          firstResult = await options.canUseTool(
+            'Read',
+            { file_path: '/test' },
+            { signal: new AbortController().signal },
+          );
+        })();
+      });
+
+      const exec1 = session.execute('test', {
+        onChunk: vi.fn(),
+        onPermissionRequest: vi.fn(),
+        onAskUser: vi.fn(),
+      });
+
+      await new Promise((r) => setTimeout(r, 10));
       session.resolvePermission({ action: 'allowSession' });
+      await exec1;
 
-      expect(session._sessionAllowedTools.has('Read')).toBe(true);
+      expect(firstResult.behavior).toBe('allow');
+
+      // Second execution: Read should auto-approve without permission request
+      let permissionRequested = false;
+      query.mockImplementation(({ options }) => {
+        return (async function* () {
+          secondResult = await options.canUseTool(
+            'Read',
+            { file_path: '/other' },
+            { signal: new AbortController().signal },
+          );
+        })();
+      });
+
+      await session.execute('test2', {
+        onChunk: vi.fn(),
+        onPermissionRequest: () => {
+          permissionRequested = true;
+        },
+        onAskUser: vi.fn(),
+      });
+
+      expect(permissionRequested).toBe(false);
+      expect(secondResult.behavior).toBe('allow');
     });
 
     it('resolves with deny behavior and message', async () => {
-      let resolved;
-      session._pendingPermission = {
-        resolve: (val) => {
-          resolved = val;
-        },
-        toolName: 'Bash',
-        input: { command: 'rm -rf /' },
-      };
+      let toolResult;
+      query.mockImplementation(({ options }) => {
+        return (async function* () {
+          toolResult = await options.canUseTool(
+            'Bash',
+            { command: 'rm -rf /' },
+            { signal: new AbortController().signal },
+          );
+        })();
+      });
 
+      const execPromise = session.execute('test', {
+        onChunk: vi.fn(),
+        onPermissionRequest: vi.fn(),
+        onAskUser: vi.fn(),
+      });
+
+      await new Promise((r) => setTimeout(r, 10));
       session.resolvePermission({ action: 'deny', message: 'Too dangerous' });
+      await execPromise;
 
-      expect(resolved.behavior).toBe('deny');
-      expect(resolved.message).toBe('Too dangerous');
+      expect(toolResult.behavior).toBe('deny');
+      expect(toolResult.message).toBe('Too dangerous');
     });
   });
 
@@ -410,32 +565,30 @@ describe('ClaudeSession', () => {
     });
 
     it('resolves with updated input containing answers', async () => {
-      let resolved;
+      let toolResult;
       const originalInput = { questions: [{ question: 'Which?', options: [] }] };
-      session._pendingUserAnswer = {
-        resolve: (val) => {
-          resolved = val;
-        },
-        input: originalInput,
-      };
 
+      query.mockImplementation(({ options }) => {
+        return (async function* () {
+          toolResult = await options.canUseTool('AskUserQuestion', originalInput, {
+            signal: new AbortController().signal,
+          });
+        })();
+      });
+
+      const execPromise = session.execute('test', {
+        onChunk: vi.fn(),
+        onPermissionRequest: vi.fn(),
+        onAskUser: vi.fn(),
+      });
+
+      await new Promise((r) => setTimeout(r, 10));
       session.resolveUserAnswer({ 'Which?': 'Option A' });
+      await execPromise;
 
-      expect(resolved.behavior).toBe('allow');
-      expect(resolved.updatedInput.answers).toEqual({ 'Which?': 'Option A' });
-      expect(resolved.updatedInput.questions).toEqual(originalInput.questions);
-    });
-  });
-
-  describe('_formatToolsSummary', () => {
-    it('uses singular format for one tool', () => {
-      expect(session._formatToolsSummary(['Read'])).toBe('\n[Using tool: Read]\n');
-    });
-
-    it('uses plural format for multiple tools', () => {
-      expect(session._formatToolsSummary(['Read', 'Bash', 'Edit'])).toBe(
-        '\n[Tools: Read, Bash, Edit]\n',
-      );
+      expect(toolResult.behavior).toBe('allow');
+      expect(toolResult.updatedInput.answers).toEqual({ 'Which?': 'Option A' });
+      expect(toolResult.updatedInput.questions).toEqual(originalInput.questions);
     });
   });
 });
@@ -474,35 +627,25 @@ describe('ClaudeSession mode change detection', () => {
     session.setPermissionMode('plan');
     const onModeChange = vi.fn();
 
-    // Create a generator that calls canUseTool during iteration
-    let resolveToolUse;
-    const toolUsePromise = new Promise((resolve) => {
-      resolveToolUse = resolve;
-    });
-
+    let toolResult;
     query.mockImplementation(({ options }) => {
       return (async function* () {
-        // Call canUseTool during the iteration (while execute is running)
-        const result = await options.canUseTool(
+        toolResult = await options.canUseTool(
           'ExitPlanMode',
           {},
           { signal: new AbortController().signal },
         );
-        resolveToolUse(result);
       })();
     });
 
-    const executePromise = session.execute('test', {
+    await session.execute('test', {
       onChunk: vi.fn(),
       onPermissionRequest: vi.fn(),
       onAskUser: vi.fn(),
       onModeChange,
     });
 
-    const result = await toolUsePromise;
-    await executePromise;
-
-    expect(result.behavior).toBe('allow');
+    expect(toolResult.behavior).toBe('allow');
     expect(session.getPermissionMode()).toBe('default');
     expect(onModeChange).toHaveBeenCalledWith('default');
   });
